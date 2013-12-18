@@ -1,0 +1,26 @@
+{
+  "name": "NDN-BrowserKit",
+  "version": "0.0.0",
+  "description": "IndexedDB NDN repository and some basic IO patterns",
+  "main": "index.js",
+  "dependencies":{
+    "ndn-browser-shim": "*"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://github.com/rynomad/NDN-Browserkit"
+  },
+  "keywords": [
+    "ndn",
+    "indexedDB"
+  ],
+  "author": "Ryan Bennett @CSU",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/rynomad/NDN-Browserkit/issues"
+  },
+  "homepage": "https://github.com/rynomad/NDN-Browserkit"
+}
