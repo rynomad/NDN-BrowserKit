@@ -1,3 +1,1001 @@
+;(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+var ndn = require('ndn-browser-shim');
+ndn.r = require('./lib/repo.js');
+ndn.io = require('./lib/ndn-io.js');
+ndn.utils = require('./lib/utils.js');
+ndn.rtc = require('./lib/ndn-rtc.js')
+module.exports = ndn;
+
+},{"./lib/ndn-io.js":2,"./lib/ndn-rtc.js":3,"./lib/repo.js":4,"./lib/utils.js":5,"ndn-browser-shim":6}],2:[function(require,module,exports){
+var ndn = require('ndn-browser-shim');
+var utils = require('./utils.js');
+var io = {};
+
+io.face = new ndn.Face({host: location.host.split(':')[0], port: 9696}) // placeholder for testing logic: should eventualy point to an internal daemon-style object
+
+
+
+io.fetch = function(name, type, whenGotten, whenNotGotten) {
+  var contentArray = [];
+  var interest = new ndn.Interest(name);
+  var recievedSegments = 0;
+  
+  var onData = function(interest, co) {
+    var segmentNumber = utils.getSegmentInteger(co.name)
+    var finalSegmentNumber = 1 + ndn.DataUtils.bigEndianToUnsignedInt(co.signedInfo.finalBlockID);
+
+    contentArray[segmentNumber] = (ndn.DataUtils.toString(co.content));
+    recievedSegments++;
+    console.log(co, recievedSegments, finalSegmentNumber);
+    if (utils.isFirstSegment(co.name, co) || (recievedSegments == finalSegmentNumber)) {
+      if (recievedSegments == finalSegmentNumber) {
+        console.log('got all segment', contentArray.length);
+        if (type == "object") {
+          assembleObject();
+        } else if (type == "blob") {
+          assembleBlob()
+        };
+      } else {
+        for (var i = 0; i < finalSegmentNumber; i++) {
+          if (contentArray[i] == undefined) {
+            var newName = co.name.getPrefix(-1).appendSegment(i)
+            io.face.expressInterest(newName, onData, onTimeout)
+          };
+        };
+      };
+    } else {
+      var newName = co.name.getPrefix(-1).appendSegment(segmentNumber - 1);
+      io.face.expressInterest(newName, onData, onTimeout);
+    };
+  };
+  var onTimeout = function(interest) {
+    whenNotGotten(name);
+  };
+  
+  var assembleBlob = function() {
+    var mime = co.name.components[2].toEscapedString() + '/' + co.name.components[3].toEscapedString()
+    var blob = new Blob(contentArray, {type: mime})
+    whenGotten(name, blob)
+  };
+  
+  var assembleObject = function() {
+    var string = "";
+    for (var i = 0; i < contentArray.length; i++) {
+      string += contentArray[i];
+    };
+    var obj = JSON.parse(string);
+    whenGotten(name, obj);
+  };
+  
+  interest.childSelector = 1;
+  io.face.expressInterest(interest, onData, onTimeout);  
+};
+
+io.publishFile = function(name, file) {
+  var chunkSize = 7000,
+      fileSize = (file.size - 1),
+      totalSegments = Math.ceil(file.size / chunkSize);
+      
+  function getSlice(file, segment, transport) {
+    var fr = new FileReader,
+        chunks = totalSegments,
+        start = segment * chunkSize,
+        end = start + chunkSize >= file.size ? file.size : start + chunkSize,
+        blob = file.slice(start,end);
+    
+    fr.onloadend = function(e) {      
+      var buff = new ndn.ndnbuf(e.target.result),
+          segmentName = (new ndn.Name(name)).appendSegment(segment),
+          data = new ndn.Data(segmentName, new SignedInfo(), buff),
+          encodedData;
+        
+        data.signedInfo.setFields();
+        data.signedInfo.finalBlockID = initSegment(totalSegments - 1);
+        data.sign();
+        encodedData = data.encode();
+        
+        transport.send(encodedData);
+    };
+    console.log("about to read as array buffer")
+    fr.readAsArrayBuffer(blob, (end - start))
+    
+  
+  };
+  
+  function onInterest(prefix, interest, transport) {
+    console.log("onInterest called.", interest);
+    if (!utils.endsWithSegmentNumber(interest.name)) {
+      interest.name.appendSegment(0);
+    };
+    var segment = ndn.DataUtils.bigEndianToUnsignedInt(interest.name.components[interest.name.components.length - 1].value);
+        
+    getSlice(this.onInterest.file, segment, transport)
+
+  };
+  onInterest.file = file;
+  
+  function sendWriteCommand() {
+    var onTimeout = function (interest) {
+      console.log("timeout", interest);
+    };
+    var onData = function(data) {
+      console.log(data)
+    };
+    command = name.getPrefix(name.components.length - 1).append(new Name.Component([0xc1, 0x2e, 0x52, 0x2e, 0x73, 0x77])).append(getSuffix(name, name.components.length - 1 ))
+    io.face.expressInterest(command, onData, onTimeout);
+    console.log("did this time correctly?", command.toUri())
+  };
+  io.face.registerPrefix(new ndn.Name(name.toUri()), onInterest)
+  setTimeout(sendWriteCommand, 5000)
+
+}; 
+
+io.publishObject = function(name, obj) {
+  var ndnArray = utils.chunkArbitraryData(name, data)
+
+  var onInterest = function(prefix, interest, transport) {
+    var requestedSegment = utils.getSegmentInteger(interest.name)
+    transport.send(ndnArray[requestedSegment])
+  };
+  
+  io.face.registerPrefix(name, onInterest)
+  
+  var command = name.append(new Name.Component([0xc1, 0x2e, 0x52, 0x2e, 0x73, 0x77])) // %C1.R.sw
+  io.face.expressInterest(command)
+};
+
+io.announce = function(name) {
+  
+};
+
+
+
+
+module.exports = io;
+
+
+
+},{"./utils.js":5,"ndn-browser-shim":6}],3:[function(require,module,exports){
+var ndn = require('ndn-browser-shim');
+var utils = require('./utils.js');
+var io = require('./ndn-io.js');
+
+var rtc = {};
+var servers = server = {
+    iceServers: [
+        {url: "stun:stun.l.google.com:19302"}
+    ]
+};
+
+rtc.face = new ndn.Face({host: location.host.split(':')[0], port: 9696})
+
+rtc.connections = [];
+rtc.channels = [];
+
+
+var rtcNameSpace = 'app/rtc'
+var onRTCInterest = function (prefix, interest, transport) {
+  if (interest.name.components[2].toEscapedString() == 'offer') {
+    var offer = {
+      type: "offer",
+      sdp: ndn.DataUtils.toString(interest.name.components[3].value)
+    };
+    var pc = new webkitRTCPeerConnection(servers, {optional: [{RtpDataChannels: true}]});
+    var dataChannel = pc.createDataChannel("channel", { reliable: false });
+    dataChannel.onmessage = function (event) {
+      var data = event.data;
+
+      console.log("I got data channel message: ", data);
+    }; 
+
+    dataChannel.onopen = function (event) {
+      console.log('data channel open?', rtc.connections[i].dataChannel)
+      dataChannel.send("Hello World!");
+    };
+    
+    rtc.channels.push(dataChannel)
+    pc.setRemoteDescription(new RTCSessionDescription(offer));
+    pc.onconnection = function () {
+      console.log('creating data channel')
+      var channel = pC.createDataChannel("chat", {});
+
+      channel.onmessage = function (event) {
+          alert("Server: " + event.data);
+      };
+
+      channel.onopen = function () {
+          channel.send("Hello Server!");
+      };
+    };
+    pc.ondatachannel = function (evt) {
+      var channel = evt.channel
+        channel.onmessage = function (event) {
+            alert("Client: " + event.data);
+        };
+
+        channel.onopen = function () {
+            channel.send("Hello Client!");
+        };
+    };
+    var onCreated = function(sdp) {
+      pc.setLocalDescription(sdp)
+      var answer = sdp;
+      var string = JSON.stringify(answer.sdp);
+      var sending = new ndn.ndnbuf(string)
+      var data = new ndn.Data(interest.name, new ndn.SignedInfo(), sending)
+      data.signedInfo.setFields()
+      data.sign();
+      var encoded = data.encode()
+      
+      transport.send(encoded);
+      console.log('sent answer', answer);
+    };
+    
+    
+    pc.createAnswer(onCreated)
+    console.log('alerted to offer', offer, pc)
+    rtc.connections.push(pc)
+  } else if (interest.name.components[2].toEscapedString() == 'ice') {
+    var candidate = JSON.parse(ndn.DataUtils.toString(interest.name.components[3].value))
+    for (var i = 0; i < rtc.connections.length; i++) {
+      rtc.connections[i].addIceCandidate(new RTCIceCandidate({
+          sdpMLineIndex: candidate.sdpMLineIndex,
+          candidate: candidate.candidate
+      }));
+      console.log(rtc.connections[i])
+      
+    };
+    console.log('alerted to iceCandidate', candidate, rtc.connections)
+  };
+  console.log(interest.name.components[3], pc)
+
+};
+
+rtc.face.registerPrefix(new ndn.Name(rtcNameSpace), onRTCInterest)
+
+
+
+rtc.peerConnection = function () {
+  var pC = new webkitRTCPeerConnection(servers, {optional: [{RtpDataChannels: true}]});
+  rtc.connections.push(pC)
+  console.log(pC)
+  pC.onicecandidate = function (evt) {
+    if (evt.candidate) {
+      console.log('got ice candidate', evt)
+      var onData = function (interest, data) {
+          console.log(interest, data);
+      };
+      
+      var name = (new ndn.Name('app/rtc/ice')).append(new ndn.Name.Component(JSON.stringify(evt.candidate)))  
+       
+      rtc.face.expressInterest(name, onData);
+    };
+  };
+  pC.onconnection = function () {
+   console.log('creating data channel')
+    var channel = pC.createDataChannel("chat", {});
+
+    channel.onmessage = function (event) {
+        alert("Server: " + event.data);
+    };
+
+    channel.onopen = function () {
+        channel.send("Hello Server!");
+    };
+  };
+  pC.ondatachannel = function (channel) {
+    console.log('got data channel')
+      channel.onmessage = function (event) {
+          alert("Client: " + event.data);
+      };
+
+      channel.onopen = function () {
+          channel.send("Hello Client!");
+      };
+  };
+  var dataChannel = pC.createDataChannel("channel", { reliable: false });
+  dataChannel.onmessage = function (event) {
+    var data = event.data;
+
+    console.log("I got data channel message: ", data);
+  }; 
+
+  dataChannel.onopen = function (event) {
+    console.log('data channel open?', rtc.connections[i].dataChannel)
+    dataChannel.send("Hello World!");
+  };
+  
+  rtc.channels.push(dataChannel)
+  pC.createOffer(onOfferCreated, onError);
+
+  function onError(err) {
+    window.alert(err.message);
+  }
+
+  function onOfferCreated(description) {
+    offer = description;
+    var name = (new ndn.Name(rtcNameSpace + '/offer')).append(new ndn.Name.Component(offer.sdp))
+    console.log(offer)
+    console.log(ndn.DataUtils.toString(name.components[3].value), offer.sdp)
+    var onData = function (interest, data) {
+      var answer = JSON.parse(ndn.DataUtils.toString(data.content))
+      console.log( 'received answer', answer);
+      pC.setRemoteDescription(new RTCSessionDescription({type: 'answer', sdp: answer}))
+      console.log(pC)
+    };
+    function time() {return rtc.face.expressInterest(name, onData)};
+    setTimeout(time, 1000)
+    pC.setLocalDescription(offer, onLocalDescriptionSet, onError);
+  }
+
+  function onLocalDescriptionSet() {
+    // after this function returns, pc1 will start firing icecandidate events
+    
+    
+  }
+  function onRemoteDescriptionSet() {
+    pC.createAnswer(onAnswerCreated, onError);
+  }
+  function onAnswerCreated(description) {
+    answer = description;
+    pC.setLocalDescription(answer, onLocalDescriptionSet, onError);
+  }
+};
+
+
+
+
+module.exports = rtc;
+
+},{"./ndn-io.js":2,"./utils.js":5,"ndn-browser-shim":6}],4:[function(require,module,exports){
+//Global Namespacing for the ndnr
+
+function indexedDBOk() {
+  return "indexedDB" in window;
+};
+
+var ndn = require('ndn-browser-shim');
+var Name = ndn.Name;
+var utils = require('./utils.js')
+
+/**
+ * Database constructor
+ * @prefix: application prefix (used as database name) STRING (may contain globally routable prefix)
+ */
+var ndnr = function (prefix, faceParam, callback) {
+
+  if(!indexedDBOk) return console.log('no indexedDb');  // No IndexedDB support
+  var prefixUri = (new ndn.Name(prefix)).toUri(),           // normalize 
+      initDb = {};           
+  
+  this.prefix = prefixUri
+  
+  
+  if (faceParam) {
+    this.interestHandler.face = new ndn.Face(faceParam)
+  } else {
+    this.interestHandler.face = new ndn.Face({host: location.host.split(':')[0], port: 9696})
+  };
+  
+  this.interestHandler.face.registerPrefix(new ndn.Name(prefix), this.interestHandler);
+  
+  initDb.onupgradeneeded = function(e) {
+    console.log("Version 1 of database ", prefixUri, "created");
+    if (callback != undefined) {
+      callback()
+    };
+  };
+  console.log(ndn)
+  useIndexedDB(prefixUri, initDb);
+
+};
+
+ndnr.prototype.get = function (name, callback) {
+  var objectStoreName = utils.normalizeNameToObjectStore(name)
+  console.log(objectStoreName)
+  var getRequest = {},
+      getResult = []
+  
+  getRequest.onsuccess = function (e) {
+    if (e.target.result.objectStoreNames.contains(objectStoreName)) {
+      var action = e.target.result.transaction([objectStoreName]).objectStore(objectStoreName).openCursor().onsuccess = function(e) {
+        var cursor = e.target.result;
+        console.log(e.target.result)
+        if (cursor) {
+          getResult.push(cursor.value);
+          cursor.continue();
+        }
+        else {
+          console.log("No more entries!");
+          callback(getResult)
+        }
+      };
+      
+    };
+  };
+  
+  useIndexedDB(this.prefix, getRequest);
+};
+
+ndnr.prototype.put = function (name, data, callback) {
+  //ALMOST WORKING
+  var hook = this
+  console.log(this);
+  
+  if (data instanceof File) { // called with the Filereader API
+    return ndnPutFile(name, data, this);
+  } else if (data instanceof Array) { // Assume we're passing a preformatted Array
+    var ndnArray = data;
+    console.log(data)
+  } else { // anything else
+    //console.log(data)
+    var ndnArray = utils.chunkArbitraryData(new ndn.Name(this.prefix).append(name), data);
+  };
+  
+  var objectStoreName = utils.normalizeNameToObjectStore(name)
+  console.log(objectStoreName)
+  var putRequest = {};
+  var dbName = this.prefix;
+  this.put.data = ndnArray;
+  putRequest.onupgradeneeded = function (e) {
+    e.target.result.createObjectStore(objectStoreName).onsuccess = function(e) {
+      console.log(e.target.result)
+    };
+  };
+  putRequest.onsuccess = function (e) {
+    if (e.target.result.objectStoreNames.contains(objectStoreName)) {
+      for (i = 0; i < ndnArray.length; i++) {
+        console.log('adding data', i, "of ", ndnArray.length)
+        var action = e.target.result.transaction([objectStoreName], "readwrite").objectStore(objectStoreName).put(ndnArray[i], i);
+        if (i + 1 == ndnArray.length) {
+          action.onsuccess = function (e) {
+            buildObjectStoreTree(new ndn.Name(dbName), objectStoreName);
+            if (callback != undefined) {
+              callback(name, hook.interestHandler.face);
+            };
+            
+          };
+        };
+      };
+    } else {
+      console.log('need upgrade')
+      useIndexedDB(dbName, putRequest, e.target.result.version + 1)
+      
+    };
+  }; 
+  useIndexedDB(dbName, putRequest)
+};
+
+
+
+// vvvv THIS IS THE GOOD STUFF vvvv Plus NDN-helpers. NEED to Refactor and streamline useIndexedDB a little but it seems to be working good
+
+ndnr.prototype.interestHandler = function(prefix, interest, transport) {
+  console.log("onInterest called for incoming interest: ", interest.toUri());
+  interest.face = this.onInterest.face  
+  if (utils.nameHasCommandMarker(interest.name)) {
+    console.log('incoming interest has command marker ', utils.getCommandMarker(interest.name));
+    executeCommand(prefix, interest, transport); 
+    return;
+  } else {
+    console.log('attempting to fulfill interest');
+    fulfillInterest(prefix, interest, transport);
+  };
+};
+
+
+//TODO: Flesh out this subroutine, it is the keystone of the library, handle interest selectors, etc
+function fulfillInterest(prefix, interest, transport) {
+  var localName = utils.getSuffix(interest.name, prefix.components.length )
+      objectStoreName = utils.normalizeNameToObjectStore(localName),
+      dbName = prefix.toUri(),
+      getContent = {},
+      suffixIndex = 0,
+      query = localName.toUri();
+      if ((interest.childSelector == 0) || (interest.childSelector == undefined)) {
+        cursorOrder = "next";
+      } else {
+        cursorOrder = "prev";
+      };
+      
+  if (utils.endsWithSegmentNumber(interest.name)) {
+    // A specific segment of a data object is being requested, so don't bother querying for loose matches, just return or drop
+    requestedSegment = utils.getSegmentInteger(interest.name)
+    console.log(requestedSegment, interest.name.components)
+    getContent.onsuccess = function(e) {
+      getContent.result = e.target.result;
+      if (e.target.result.objectStoreNames.contains(objectStoreName)) {
+        e.target.result.transaction(objectStoreName).objectStore(objectStoreName).get(requestedSegment).onsuccess = function(e) {
+          console.log(e.target.result, 'about to send')
+          transport.send(e.target.result)
+        };
+      } else {
+        console.log("no data for ", interest)
+      };
+    };
+  } else {
+    // A general interest. Interpret according to selectors and return the first segment of the best matching dataset
+    getContent.onsuccess = function(e) {
+      db = getContent.result = e.target.result
+      function crawl(q) {
+        console.log(q)
+        if (db.objectStoreNames.contains(q)) {
+          var store = db.transaction(q).objectStore(q),
+              index = store.index('escapedString');
+          console.log('objectStoreNames contains ', q)
+          if ((interest.maxSuffixComponents == null) || (suffixIndex <= interest.maxSuffixComponents)) {
+            console.log('Suffix count within constraints')
+            index.openCursor(null, cursorOrder).onsuccess = function(e) {
+              var cursor = e.target.result;
+              if (cursor) {
+                if ((interest.exclude == null) || (!interest.exclude.matches(new ndn.Name.Component(cursor.value.escapedString)))) {
+                  console.log(cursor.value.escapedString)
+                  if (cursor.value.escapedString == "%00") {
+                    console.log('got to data')
+                    if ((interest.minSuffixComponents == null) || (suffixIndex >= interest.minSuffixComponents )) {
+                      console.log('more than minimum suffix comps')
+                      query += '/' + cursor.value.escapedString
+                      console.log(query)
+                     
+                      store = db.transaction(query).objectStore(query).get(0).onsuccess = function(e) {
+                        transport.send(e.target.result)
+                      };
+                    } else {
+                      cursor.continue()
+                    };
+                  } else {
+                    suffixIndex++
+                    if (query != '/') {
+                      query += '/' + cursor.value.escapedString
+                    } else {
+                      query += cursor.value.escapedString
+                    }
+                    
+                    crawl(query)
+                  };
+                } else {
+                  cursor.continue()
+                };
+              } else {
+                console.log('no entries ')
+              };
+            };
+          } else {
+            console.log('too many suffix components')
+          };
+        };
+      };
+      crawl(query)
+    };
+  };
+  useIndexedDB(dbName, getContent);
+};
+
+
+function recursiveSegmentRequest(face, prefix, objectStoreName) {
+  var dbName = prefix.toUri();
+      firstSegmentName = (new ndn.Name(prefix)).append(new ndn.Name(objectStoreName));
+      insertSegment = {};
+      
+      insertSegment.onsuccess = function(e) {
+        var currentSegment = utils.getSegmentInteger(insertSegment.contentObject.name),
+            finalSegment = ndn.DataUtils.bigEndianToUnsignedInt(insertSegment.contentObject.signedInfo.finalBlockID);
+            
+        e.target.result.transaction(objectStoreName, "readwrite").objectStore(objectStoreName).put(insertSegment.contentObject.encode(), currentSegment).onsuccess = function(e) {
+          console.log("retrieved and stored segment ", currentSegment, " of ", finalSegment  ," into objectStore ", objectStoreName);
+          if (currentSegment < finalSegment) {
+            var newName = firstSegmentName.getPrefix(firstSegmentName.components.length - 1).appendSegment(currentSegment + 1);
+            face.expressInterest(newName, onData, onTimeout);
+          };
+        };
+      };
+  
+  function onData(interest, contentObject) {
+    console.log("onData called in recursiveSegmentRequest: ", contentObject)
+    insertSegment.contentObject = contentObject;
+    useIndexedDB(dbName, insertSegment)
+  };
+  
+  function onTimeout(interest) {
+    console.log("Interest Timed out in recursiveSegmentRequest: ", interest, new Date());
+  };
+  
+  face.expressInterest(firstSegmentName, onData, onTimeout);
+};
+
+function buildObjectStoreTree(prefix, objectStoreName, onFinished, arg) {
+  var dbName = prefix.toUri(),
+      properName = new ndn.Name(objectStoreName),
+      uriArray = utils.getAllPrefixes(properName),
+      toCreate = [],
+      evaluate = {},
+      growTree = {},
+      version;
+ 
+      evaluate.onsuccess = function(e) {
+        for (i = 0 ; i < uriArray.length; i++) {
+          if (!e.target.result.objectStoreNames.contains(uriArray[i])) {
+            toCreate.push(uriArray[i]);
+          };
+        };
+        
+        if (toCreate.length > 0) {
+          console.log(toCreate.length, " objectStores need to be created. Attempting to upgrade database");
+          version = e.target.result.version + 1;
+          useIndexedDB(dbName, growTree, version);
+        } else {
+          console.log(toCreate.length, " objectStores need to be created. calling onFinished(arg) if applicable");
+          if (onFinished == recursiveSegmentRequest) {
+            if (arg) {
+              onFinished(arg, prefix, objectStoreName)
+            } else {
+              onFinished()
+            };
+          }
+        };
+        
+      };
+      
+      
+      growTree.onupgradeneeded = function(e) {
+        console.log("growTree.onupgradeneeded fired: creating ", toCreate.length, " new objectStores");
+        for(i = 0; i < toCreate.length; i++) {
+          if (toCreate[i] == objectStoreName) {
+            e.target.result.createObjectStore(toCreate[i])
+            
+          } else {
+            
+            var store = e.target.result.createObjectStore(toCreate[i], {keyPath: "escapedString"});
+            store.createIndex('escapedString', 'escapedString', {unique: true})
+                      
+          };
+        };
+      };
+      
+      growTree.onsuccess = function(e) {
+        console.log("database successfully upgraded to version ", e.target.result.version);
+        var transaction = e.target.result.transaction(uriArray, "readwrite")
+        transaction.oncomplete = function(e) {
+          console.log("New Tree successfully populated, now calling onFinished(arg) if applicable")
+          if (onFinished == recursiveSegmentRequest) {
+            if (arg) {
+              onFinished(arg, prefix, objectStoreName)
+            } else {
+              onFinished()
+            };
+          };
+        };
+        
+        uriArray.pop();
+        
+        (function populate(i) {
+          var entry = {};
+          entry.component = properName.components[i];
+          console.log(entry)
+          entry.escapedString = entry.component.toEscapedString();
+          transaction.objectStore(uriArray[i]).put(entry);
+          i++;
+          if (i < uriArray.length) {
+            populate(i);
+          };
+        })(0)
+      };
+      
+  useIndexedDB(dbName, evaluate);
+};
+
+function executeCommand(prefix, interest, transport) {
+  var command = utils.getCommandMarker(interest.name).split('%7E')[0];
+  
+  if (command in ndnr.commandMarkers) {
+    console.log("executing recognized command ", command);
+    ndnr.commandMarkers[command](prefix, interest, transport); 
+  } else {
+    console.log("ignoring unrecognized command ", command);
+  };
+};
+
+function useIndexedDB(dbName, action, version) {
+  var request;
+  
+  if (version) {
+    request = indexedDB.open(dbName, version);
+  } else {
+    request = indexedDB.open(dbName);
+  };
+  
+  if (action.onupgradeneeded) {
+    request.onupgradeneeded = action.onupgradeneeded;
+  } else {
+    request.onupgradeneeded = function(e) {
+      console.log('upgrading database to version ', e.target.result.version)
+    };
+  };
+  if (action.onsuccess) {
+    request.onsuccess = function(e) {
+      request.result.onversionchange = function(e){
+        console.log('version change requested, closing db');
+        request.result.close();
+      }
+      action.onsuccess(e);
+    };
+  } else {
+    request.onsuccess = function(e) { 
+      request.result.onversionchange = function(e){
+        console.log('version change requested, closing db');
+        request.result.close();
+      }
+      console.log("database ", dbName, " is open at version ", e.target.result.version)
+    };
+  };
+  if (action.onerror) {
+    request.onerror = action.onerror;
+  } else {
+    request.onerror = function(e) {
+      console.log('error: ', e);
+    };
+  };
+  if (action.onclose) {
+    request.onclose = action.onclose;
+  } else {
+    request.onclose = function(e) {
+      console.log("database ", dbName, " is closed at version ", e.target.result.version)
+    };
+  };
+  if (action.onblocked) {
+    request.onblocked = action.onblocked;
+  } else {
+    request.onblocked = function(e) {
+      console.log("request blocked: ", e);
+    };
+  };
+};
+
+ndnr.commandMarkers = {};
+
+
+ndnr.commandMarkers["%C1.R.sw"] = function startWrite( prefix, interest) {
+  var localName = getNameWithoutCommandMarker(utils.getSuffix(interest.name, prefix.components.length)),
+      objectStoreName = utils.normalizeNameToObjectStore(localName);
+      
+  
+  console.log("Building objectStore Tree for ", objectStoreName, this);
+  
+  buildObjectStoreTree(prefix, objectStoreName, recursiveSegmentRequest, interest.face);
+};
+
+ndnr.commandMarkers["%C1.R.sw"].component = new Name.Component([0xc1, 0x2e, 0x52, 0x2e, 0x73, 0x77]);
+
+module.exports = ndnr
+
+},{"./utils.js":5,"ndn-browser-shim":6}],5:[function(require,module,exports){
+var utils = {}
+var Data = require('ndn-browser-shim').Data
+var Name = require('ndn-browser-shim').Name
+var SignedInfo = require('ndn-browser-shim').SignedInfo
+var ndnbuf = require('ndn-browser-shim').ndnbuf
+var DataUtils = require('ndn-browser-shim').DataUtils
+
+utils.chunkArbitraryData = function(name, data, fresh) {
+  var ndnArray = [];
+  console.log(name)
+  if (typeof data == 'object') {
+    var string = JSON.stringify(data);
+  } else if (typeof data == 'string') {
+    var string = data;
+  } else if (typeof data == 'file') {
+    //console.log('no handlers yet for datatype: ', typeof data);
+    return;
+  };
+
+  var stringArray = string.match(/.{1,4000}/g);
+  var segmentNames = [];
+  for (i = 0; i < stringArray.length; i++) {
+    ndnArray[i] = stringArray[i]
+    segmentNames[i] = new Name(name).appendSegment(i)
+    co = new Data(segmentNames[i], new SignedInfo(), new ndnbuf(stringArray[i]));
+    co.signedInfo.setFields()
+    co.signedInfo.finalBlockID = utils.initSegment(stringArray.length - 1)
+    console.log(co.signedInfo.finalBlockID)
+    if (fresh != undefined) {
+      co.signedInfo.freshnessSeconds = fresh
+    }
+    co.sign()
+    ndnArray[i] = co.encode()
+  };
+  
+  return ndnArray;
+
+};
+
+utils.initSegment = function(seg) {
+    if (seg == null || seg == 0)
+	  return (new ndnbuf('00', 'hex'));
+
+    var segStr = seg.toString(16);
+
+    if (segStr.length % 2 == 1)
+	segStr = '0' + segStr;
+
+    segStr = '00' + segStr;
+    return (new ndnbuf(segStr, 'hex'));
+};
+
+utils.getAllPrefixes = function(name) {
+  var uriArray = [];
+  for (i = 0 ; i < name.components.length + 1 ; i++) {
+    var uri = name.getPrefix(i).toUri()
+    uriArray.push(uri);
+  };
+  return uriArray;
+};
+
+utils.isFirstSegment = function(name) {
+    return name.components != null && name.components.length >= 1 &&
+        name.components[name.components.length - 1].value.length == 1 &&
+        name.components[name.components.length - 1].value[0] == 0;
+};
+
+utils.isLastSegment = function(name, co) {
+   
+    return DataUtils.arraysEqual(name.components[name.components.length - 1].value, co.signedInfo.finalBlockID);
+}
+
+utils.normalizeUri = function(name) {
+  //console.log(name)
+  if (!endsWithSegmentNumber(name)) {
+    normalizedName = name;
+    requestedSegment = 0
+  } else if (!isFirstSegment(name)) {
+    normalizedName = name.getPrefix(name.components.length - 1);
+    requestedSegment = DataUtils.bigEndianToUnsignedInt(name.components[name.components.length - 1].value);
+  } else {
+    normalizedName = name.getPrefix(name.components.length - 1) ;
+    requestedSegment = 0;
+  };
+  var returns = [normalizedName, requestedSegment];
+  return returns;
+};
+
+utils.getSegmentInteger = function(name) {
+  if (name.components != null && name.components.length >= 1 &&
+  name.components[name.components.length - 1].value.length >= 1 &&
+  name.components[name.components.length - 1].value[0] == 0) {
+    return DataUtils.bigEndianToUnsignedInt(name.components[name.components.length - 1].value)
+  } else {
+    return 0;
+  }
+};
+
+utils.normalizeNameToObjectStore = function(name) {
+  var throwaway = utils.getNameWithoutCommandMarker(name); 
+  
+  if (!utils.endsWithSegmentNumber(throwaway)) {
+    return throwaway.appendSegment(0).toUri();
+  } else if (!utils.isFirstSegment(throwaway)) {
+    return throwaway.getPrefix(name.components.length - 1).appendSegment(0).toUri();
+  } else {
+    return throwaway.toUri();
+  };
+};
+
+utils.endsWithSegmentNumber = function(name) {
+    return name.components != null && name.components.length >= 1 &&
+        name.components[name.components.length - 1].value.length >= 1 &&
+        name.components[name.components.length - 1].value[0] == 0;
+}
+
+utils.nameHasCommandMarker = function(name) {
+  for (var i = name.size() - 1; i >= 0; --i) {
+    var component = name.components[i].getValue();
+    if (component.length <= 0)
+      continue;
+        
+    if (component[0] == 0xC1) {
+      return true
+    };
+  }
+    
+  return false;
+};
+
+utils.getCommandMarker = function(name) {
+  console.log(name)
+  for (var i = name.size() - 1; i >= 0; --i) {
+    var component = name.components[i].getValue();
+    if (component.length <= 0)
+      continue;
+        
+    if (component[0] == 0xC1 && component[2] != 0x4E) {
+      return name.components[i].toEscapedString()
+    };
+  }
+};
+
+utils.getNameWithoutCommandMarker = function(name) {
+  var strippedName = new Name('');
+  
+  for (var i = 0 ; i < name.size(); i++) {
+    var component = name.components[i].getValue();
+    if (component.length <= 0)
+      continue;
+        
+    if (component[0] != 0xC1) {
+      strippedName.append(name.components[i]);
+    };
+  };
+  return strippedName;
+};
+
+
+utils.getSuffix = function(name, p) {
+    return new Name(name.components.slice(p));
+};
+
+utils.appendVersion = function(name, date) {
+    if (date) {
+      if (date instanceof Date) {
+        var d = date.getTime
+        
+      } else
+        var d = date;
+    } else {
+      var d = new Date().getTime;
+    };
+    
+    var time = d.toString(16);          
+    if (time.length % 2 == 1) {
+	    time = '0' + time;
+    };
+    time = 'fd' + time;
+    var binTime = new ndnbuf(time, 'hex');
+    console.log(binTime)
+    return name.append(binTime);
+};
+
+utils.timeToVersion = function(date) {
+  if (date instanceof Date) {
+    var d = date.getTime
+  } else {
+    var d = date;
+  };
+  var time = d.toString(16);          
+  if (time.length % 2 == 1) {
+    time = '0' + time;
+  };
+  time = 'fd' + time;
+  var binTime = new ndnbuf(time, 'hex');
+  return (new Name.Component(binTime).toEscapedString())
+  
+};
+
+utils.versionToTime = function(version) {
+  time = 0
+  array = DataUtils.toNumbers(DataUtils.toHex(version))
+  console.log(array)
+  for (i = 1; i < array.length ; i++) {
+    time = time + (array[i] * Math.pow(2, (7 - i)));
+    console.log(time)
+  };
+  return time
+};
+
+
+
+utils.setNonce = function(interest) {
+  var bytes = [0xc1, 0x2e, 0x4e, 0x00];
+  for (var n = 8; n > 0; n--) {
+	  bytes.push(Math.floor(Math.random() * 256));
+	  console.log(bytes)
+  }
+  var buf = new Uint8Array(bytes)
+  interest.name.append(buf)
+  interest.nonce = buf;
+}
+
+module.exports = utils;
+
+},{"ndn-browser-shim":6}],6:[function(require,module,exports){
 /** 
  * Copyright (C) 2013 Regents of the University of California.
  * @author: Wentao Shang
@@ -10642,3 +11640,14 @@ BigInteger.prototype.square = bnSquare;
 
 exports.ndnbuf = ndnbuf;
 module.exports = exports;
+
+},{}],7:[function(require,module,exports){
+var ndn = require('../index.js');
+
+console.log(ndn);
+var rtc = new ndn.rtc.peerConnection();
+window.ndn = ndn
+console.log(rtc);
+
+},{"../index.js":1}]},{},[7])
+;
