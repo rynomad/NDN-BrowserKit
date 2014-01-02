@@ -3,10 +3,40 @@ var ndn = require('ndn-browser-shim');
 ndn.r = require('./lib/repo.js');
 ndn.io = require('./lib/ndn-io.js');
 ndn.utils = require('./lib/utils.js');
-ndn.rtc = require('./lib/ndn-rtc.js')
+ndn.rtc = require('./lib/ndn-rtc.js');
+ndn.d = require('./lib/ndn-d.js')
 module.exports = ndn;
 
-},{"./lib/ndn-io.js":2,"./lib/ndn-rtc.js":3,"./lib/repo.js":4,"./lib/utils.js":5,"ndn-browser-shim":6}],2:[function(require,module,exports){
+},{"./lib/ndn-d.js":2,"./lib/ndn-io.js":3,"./lib/ndn-rtc.js":4,"./lib/repo.js":5,"./lib/utils.js":6,"ndn-browser-shim":7}],2:[function(require,module,exports){
+var ndn = require('ndn-browser-shim');
+var utils = require('./utils.js');
+
+ndn.rtc = require('./ndn-rtc.js');
+
+var daemon = {};
+daemon.Faces = [];
+daemon.PIT = [];
+daemon.FIB = [];
+
+var localTransport = function() {
+  console.log('new local Transport')
+};
+
+
+var localFace = new ndn.Face({host: 0, port:0, getTransport: function(){ return new localTransport}})
+
+daemon.Faces.push(localFace);
+
+daemon.newFace = function(ndndid) {
+  transport = ndn.rtc.createPeerConnection(ndndid)
+  var face = new ndn.Face({host: 0, port: 0, getTransport: function(){return transport}, ndndid: ndndid})
+  daemon.Faces.push(face)
+};
+
+
+module.exports = daemon;
+
+},{"./ndn-rtc.js":4,"./utils.js":6,"ndn-browser-shim":7}],3:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
 var utils = require('./utils.js');
 var io = {};
@@ -155,13 +185,15 @@ module.exports = io;
 
 
 
-},{"./utils.js":5,"ndn-browser-shim":6}],3:[function(require,module,exports){
+},{"./utils.js":6,"ndn-browser-shim":7}],4:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
 var utils = require('./utils.js');
 var io = require('./ndn-io.js');
+var daemon = require('./ndn-d.js')
 var BinaryXmlElementReader = ndn.BinaryXmlElementReader;
 var ndnbuf = ndn.ndnbuf;
 var Name = ndn.Name
+var Data = ndn.Data
 
 
 
@@ -207,7 +239,6 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
         var ascii = result.charCodeAt(i);
         ab[i] = ascii;
     }
-    console.log(ab, (ab instanceof ArrayBuffer), ab.buffer)
       
     if (result == null || result == undefined || result == "") {
       console.log('INVALID ANSWER');
@@ -228,21 +259,21 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
   
   this.dc.onopen = function(ev) {
     if (LOG > 3) console.log(ev);
-    if (LOG > 3) console.log('ws.onopen: WebSocket connection opened.');
-    if (LOG > 3) console.log('ws.onopen: ReadyState: ' + this.readyState);
+    if (LOG > 3) console.log('dc.onopen: WebRTC connection opened.');
+    if (LOG > 3) console.log('dc.onopen: ReadyState: ' + this.readyState);
         // Face.registerPrefix will fetch the ndndid when needed.
         
         
   }
   
   this.dc.onerror = function(ev) {
-    console.log('ws.onerror: ReadyState: ' + this.readyState);
+    console.log('dc.onerror: ReadyState: ' + this.readyState);
     console.log(ev);
-    console.log('ws.onerror: WebSocket error: ' + ev.data);
+    console.log('dc.onerror: WebRTC error: ' + ev.data);
   }
   
   this.dc.onclose = function(ev) {
-    console.log('ws.onclose: WebSocket connection closed.');
+    console.log('dc.onclose: WebRTC connection closed.');
     self.dc = null;
     
     // Close Face when WebSocket is closed
@@ -277,10 +308,20 @@ rtc.transport.prototype.send = function(data)
 
 
 
-var rtcNameSpace = 'app/rtc'
+var rtcNameSpace = 'ndnx'
 
-function sendOfferAndIceCandidate(peer, offer, candidate) {
-  var iceOffer = new Name(rtcNameSpace).append(new ndn.Name.Component(offer.sdp)).append(new ndn.Name.Component(JSON.stringify(candidate)))
+function sendOfferAndIceCandidate(ndndid, peer, offer, candidate) {
+  var iceOffer = new Name([rtcNameSpace, ndndid, 'newRTCface'])
+  
+  var obj = {action: 'newRTCface', sdp: offer.sdp, ice: candidate}
+  string = JSON.stringify(obj)
+  
+  var nfblob = new Data(new Name(), new ndn.SignedInfo(), new ndnbuf(string))
+  nfblob.signedInfo.setFields()
+  nfblob.sign()
+  var encoded = nfblob.encode()
+  
+  iceOffer.append(encoded)
   
   function onRemote(){
     peer.addIceCandidate(new RTCIceCandidate({
@@ -300,14 +341,17 @@ function sendOfferAndIceCandidate(peer, offer, candidate) {
 };
 
 
-rtc.createPeerConnection = function () {
+rtc.createPeerConnection = function (ndndid) {
+  if (ndndid == undefined) {
+    ndndid = 'filler'
+  }
   var peer = new PeerConnection(servers, {optional: [{RtpDataChannels: true}]})
-  window.dataChannel = peer.createDataChannel('ndn', null);
+  var dataChannel = peer.createDataChannel('ndn', null);
   
   peer.onicecandidate = function (evt) {
     if (evt.candidate) {
       console.log('got ICE candidate, ', evt.candidate);
-      sendOfferAndIceCandidate(peer, peer.offer, evt.candidate);
+      sendOfferAndIceCandidate(ndndid, peer, peer.offer, evt.candidate);
       peer.onicecandidate = null;
     };
   };
@@ -327,11 +371,20 @@ rtc.createPeerConnection = function () {
 };
 
 var onRTCInterest = function (prefix, interest, transport) {
+  console.log(interest)
+  var nfblob = interest.name.components[3].value
+  var d = new Data();
+  d.decode(nfblob)
+  var iceOffer = JSON.parse(ndn.DataUtils.toString(d.content))
+  console.log(iceOffer)
+  var candidate = iceOffer.ice;
+  
+  console.log(nfblob);
+  
   var offer = {
     type: "offer",
-    sdp: ndn.DataUtils.toString(interest.name.components[2].value)
+    sdp: iceOffer.sdp
   };
-  var candidate = JSON.parse(ndn.DataUtils.toString(interest.name.components[3].value))
   
   var peer = new PeerConnection(servers, {optional: [{RtpDataChannels: true}]});
   
@@ -352,8 +405,9 @@ var onRTCInterest = function (prefix, interest, transport) {
   peer.ondatachannel = function (evt) {
     console.log('got data channel, ', evt.channel );
     var dataChannel = evt.channel
-    window.transport = new rtc.transport(dataChannel)
-    window.dc = dataChannel
+    var transport = new rtc.transport(dataChannel)
+    var face = new ndn.Face({host: 0, port: 0, getTransport: function(){return transport}, ndndid: d.signedInfo.publisher.publisherPublicKeyDigest})
+    ndn.d.Faces.push(face)
     console.log('webrtc NDN transport!', window.transport, peer);
   };
   
@@ -386,7 +440,7 @@ rtc.face.registerPrefix(new ndn.Name(rtcNameSpace), onRTCInterest)
 
 module.exports = rtc;
 
-},{"./ndn-io.js":2,"./utils.js":5,"ndn-browser-shim":6}],4:[function(require,module,exports){
+},{"./ndn-d.js":2,"./ndn-io.js":3,"./utils.js":6,"ndn-browser-shim":7}],5:[function(require,module,exports){
 //Global Namespacing for the ndnr
 
 function indexedDBOk() {
@@ -397,6 +451,8 @@ var ndn = require('ndn-browser-shim');
 var Name = ndn.Name;
 var utils = require('./utils.js')
 
+var rFace; // Currently a face towards server ndnd; eventually inward facing to 'daemon'
+
 /**
  * Database constructor
  * @prefix: application prefix (used as database name) STRING (may contain globally routable prefix)
@@ -404,19 +460,19 @@ var utils = require('./utils.js')
 var ndnr = function (prefix, faceParam, callback) {
 
   if(!indexedDBOk) return console.log('no indexedDb');  // No IndexedDB support
-  var prefixUri = (new ndn.Name(prefix)).toUri(),           // normalize 
+  var prefixUri = (new ndn.Name(prefix)).toUri(),       // normalize 
       initDb = {};           
   
   this.prefix = prefixUri
   
   
   if (faceParam) {
-    this.interestHandler.face = new ndn.Face(faceParam)
+    rFace = new ndn.Face(faceParam)
   } else {
-    this.interestHandler.face = new ndn.Face({host: location.host.split(':')[0], port: 9696})
+    rFace = new ndn.Face({host: location.host.split(':')[0], port: 9696})
   };
   
-  this.interestHandler.face.registerPrefix(new ndn.Name(prefix), this.interestHandler);
+  rFace.registerPrefix(new ndn.Name(prefix), this.interestHandler);
   
   initDb.onupgradeneeded = function(e) {
     console.log("Version 1 of database ", prefixUri, "created");
@@ -490,7 +546,7 @@ ndnr.prototype.put = function (name, data, callback) {
           action.onsuccess = function (e) {
             buildObjectStoreTree(new ndn.Name(dbName), objectStoreName);
             if (callback != undefined) {
-              callback(name, hook.interestHandler.face);
+              callback(name, rFace);
             };
             
           };
@@ -807,7 +863,7 @@ ndnr.commandMarkers["%C1.R.sw"].component = new Name.Component([0xc1, 0x2e, 0x52
 
 module.exports = ndnr
 
-},{"./utils.js":5,"ndn-browser-shim":6}],5:[function(require,module,exports){
+},{"./utils.js":6,"ndn-browser-shim":7}],6:[function(require,module,exports){
 var utils = {}
 var Data = require('ndn-browser-shim').Data
 var Name = require('ndn-browser-shim').Name
@@ -1034,7 +1090,7 @@ utils.setNonce = function(interest) {
 
 module.exports = utils;
 
-},{"ndn-browser-shim":6}],6:[function(require,module,exports){
+},{"ndn-browser-shim":7}],7:[function(require,module,exports){
 /** 
  * Copyright (C) 2013 Regents of the University of California.
  * @author: Wentao Shang
@@ -11680,8 +11736,8 @@ BigInteger.prototype.square = bnSquare;
 exports.ndnbuf = ndnbuf;
 module.exports = exports;
 
-},{}],7:[function(require,module,exports){
+},{}],8:[function(require,module,exports){
 window.ndn = require('../index.js')
 
-},{"../index.js":1}]},{},[7])
+},{"../index.js":1}]},{},[8])
 ;

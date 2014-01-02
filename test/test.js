@@ -159,6 +159,16 @@ module.exports = io;
 var ndn = require('ndn-browser-shim');
 var utils = require('./utils.js');
 var io = require('./ndn-io.js');
+var BinaryXmlElementReader = ndn.BinaryXmlElementReader;
+var ndnbuf = ndn.ndnbuf;
+var Name = ndn.Name
+var Data = ndn.Data
+
+
+
+var PeerConnection = window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
+var IceCandidate = window.mozRTCIceCandidate || window.RTCIceCandidate;
+var SessionDescription = window.mozRTCSessionDescription || window.RTCSessionDescription;
 
 var rtc = {};
 var servers = server = {
@@ -169,181 +179,228 @@ var servers = server = {
 
 rtc.face = new ndn.Face({host: location.host.split(':')[0], port: 9696})
 
-rtc.connections = [];
-rtc.channels = [];
-
-
-var rtcNameSpace = 'app/rtc'
-var onRTCInterest = function (prefix, interest, transport) {
-  if (interest.name.components[2].toEscapedString() == 'offer') {
-    var offer = {
-      type: "offer",
-      sdp: ndn.DataUtils.toString(interest.name.components[3].value)
-    };
-    var pc = new webkitRTCPeerConnection(servers, {optional: [{RtpDataChannels: true}]});
-    var dataChannel = pc.createDataChannel("channel", { reliable: false });
-    dataChannel.onmessage = function (event) {
-      var data = event.data;
-
-      console.log("I got data channel message: ", data);
-    }; 
-
-    dataChannel.onopen = function (event) {
-      console.log('data channel open?', rtc.connections[i].dataChannel)
-      dataChannel.send("Hello World!");
-    };
-    
-    rtc.channels.push(dataChannel)
-    pc.setRemoteDescription(new RTCSessionDescription(offer));
-    pc.onconnection = function () {
-      console.log('creating data channel')
-      var channel = pC.createDataChannel("chat", {});
-
-      channel.onmessage = function (event) {
-          alert("Server: " + event.data);
-      };
-
-      channel.onopen = function () {
-          channel.send("Hello Server!");
-      };
-    };
-    pc.ondatachannel = function (evt) {
-      var channel = evt.channel
-        channel.onmessage = function (event) {
-            alert("Client: " + event.data);
-        };
-
-        channel.onopen = function () {
-            channel.send("Hello Client!");
-        };
-    };
-    var onCreated = function(sdp) {
-      pc.setLocalDescription(sdp)
-      var answer = sdp;
-      var string = JSON.stringify(answer.sdp);
-      var sending = new ndn.ndnbuf(string)
-      var data = new ndn.Data(interest.name, new ndn.SignedInfo(), sending)
-      data.signedInfo.setFields()
-      data.sign();
-      var encoded = data.encode()
-      
-      transport.send(encoded);
-      console.log('sent answer', answer);
-    };
-    
-    
-    pc.createAnswer(onCreated)
-    console.log('alerted to offer', offer, pc)
-    rtc.connections.push(pc)
-  } else if (interest.name.components[2].toEscapedString() == 'ice') {
-    var candidate = JSON.parse(ndn.DataUtils.toString(interest.name.components[3].value))
-    for (var i = 0; i < rtc.connections.length; i++) {
-      rtc.connections[i].addIceCandidate(new RTCIceCandidate({
-          sdpMLineIndex: candidate.sdpMLineIndex,
-          candidate: candidate.candidate
-      }));
-      console.log(rtc.connections[i])
-      
-    };
-    console.log('alerted to iceCandidate', candidate, rtc.connections)
-  };
-  console.log(interest.name.components[3], pc)
-
+rtc.transport = function (dataChannel) {
+  this.dc = dataChannel
+  
 };
 
-rtc.face.registerPrefix(new ndn.Name(rtcNameSpace), onRTCInterest)
 
-
-
-rtc.peerConnection = function () {
-  var pC = new webkitRTCPeerConnection(servers, {optional: [{RtpDataChannels: true}]});
-  rtc.connections.push(pC)
-  console.log(pC)
-  pC.onicecandidate = function (evt) {
-    if (evt.candidate) {
-      console.log('got ice candidate', evt)
-      var onData = function (interest, data) {
-          console.log(interest, data);
-      };
+/**
+ * Connect to the host and port in face.  This replaces a previous connection and sets connectedHost
+ *   and connectedPort.  Once connected, call onopenCallback().
+ * Listen on the port to read an entire binary XML encoded element and call
+ *    face.onReceivedElement(element).
+ */
+rtc.transport.prototype.connect = function(face, onopenCallback) 
+{
+  console.log(this) 
+  
+  this.dc.binaryType = "arraybuffer";
+  
+    this.elementReader = new BinaryXmlElementReader(face);
+  var self = this;
+  this.dc.onmessage = function(ev) {
+    var result = atob(ev.data);
+    console.log('RecvHandle called.');
+    var len = result.length;
+    var ab = new Uint8Array( len );
+    for (var i = 0; i < len; i++){
+        var ascii = result.charCodeAt(i);
+        ab[i] = ascii;
+    }
       
-      var name = (new ndn.Name('app/rtc/ice')).append(new ndn.Name.Component(JSON.stringify(evt.candidate)))  
-       
-      rtc.face.expressInterest(name, onData);
-    };
-  };
-  pC.onconnection = function () {
-   console.log('creating data channel')
-    var channel = pC.createDataChannel("chat", {});
+    if (result == null || result == undefined || result == "") {
+      console.log('INVALID ANSWER');
+    } else if (ab.buffer instanceof ArrayBuffer) {
+          var bytearray = new ndnbuf(ab);
+          
+      if (LOG > 3) console.log('BINARY RESPONSE IS ' + bytearray.toString('hex'));
+      
+      try {
+                // Find the end of the binary XML element and call face.onReceivedElement.
+                self.elementReader.onReceivedData(bytearray);
+      } catch (ex) {
+        console.log("NDN.ws.onmessage exception: " + ex);
+        return;
+      }
+    }
+  }
+  
+  this.dc.onopen = function(ev) {
+    if (LOG > 3) console.log(ev);
+    if (LOG > 3) console.log('dc.onopen: WebRTC connection opened.');
+    if (LOG > 3) console.log('dc.onopen: ReadyState: ' + this.readyState);
+        // Face.registerPrefix will fetch the ndndid when needed.
+        
+        
+  }
+  
+  this.dc.onerror = function(ev) {
+    console.log('dc.onerror: ReadyState: ' + this.readyState);
+    console.log(ev);
+    console.log('dc.onerror: WebRTC error: ' + ev.data);
+  }
+  
+  this.dc.onclose = function(ev) {
+    console.log('dc.onclose: WebRTC connection closed.');
+    self.dc = null;
+    
+    // Close Face when WebSocket is closed
+    face.readyStatus = Face.CLOSED;
+    face.onclose();
+    //console.log("NDN.onclose event fired.");
+  }
+  onopenCallback();
+};
 
-    channel.onmessage = function (event) {
-        alert("Server: " + event.data);
-    };
+/**
+ * Send the Uint8Array data.
+ */
+rtc.transport.prototype.send = function(data) 
+{
+  if (this.dc != null) {
+        // If we directly use data.buffer to feed ws.send(), 
+        // WebSocket may end up sending a packet with 10000 bytes of data.
+        // That is, WebSocket will flush the entire buffer
+        // regardless of the offset of the Uint8Array. So we have to create
+        // a new Uint8Array buffer with just the right size and copy the 
+        // content from binaryInterest to the new buffer.
+        //    ---Wentao
+        console.log(data)
+        var base64String = btoa(String.fromCharCode.apply(null, new Uint8Array(data)));
+        this.dc.send(base64String);
+    if (LOG > 3) console.log('ws.send() returned.');
+  }
+  else
+    console.log('rtc connection is not established.');
+};
 
-    channel.onopen = function () {
-        channel.send("Hello Server!");
-    };
-  };
-  pC.ondatachannel = function (channel) {
-    console.log('got data channel')
-      channel.onmessage = function (event) {
-          alert("Client: " + event.data);
-      };
 
-      channel.onopen = function () {
-          channel.send("Hello Client!");
-      };
-  };
-  var dataChannel = pC.createDataChannel("channel", { reliable: false });
-  dataChannel.onmessage = function (event) {
-    var data = event.data;
 
-    console.log("I got data channel message: ", data);
-  }; 
+var rtcNameSpace = 'ndnx'
 
-  dataChannel.onopen = function (event) {
-    console.log('data channel open?', rtc.connections[i].dataChannel)
-    dataChannel.send("Hello World!");
+function sendOfferAndIceCandidate(ndndid, peer, offer, candidate) {
+  var iceOffer = new Name(rtcNameSpace).append(ndndid).append('newRTCface')
+  
+  var obj = {action: 'newRTCface', sdp: offer.sdp, ice: JSON.stringify(candidate)};
+  var string = JSON.stringify(obj)
+  
+  var nfblob = new Data(new Name(''), new SignedInfo(), new ndnbuf(string))
+  nfblob.signedInfo.setFields()
+  nfblob.sign()
+  var encoded = nfblob.encode()
+  
+  iceOffer.append(encoded)
+  
+   .append(new ndn.Name.Component(offer.sdp)).append(new ndn.Name.Component(JSON.stringify(candidate)))
+  
+  function onRemote(){
+    peer.addIceCandidate(new RTCIceCandidate({
+        sdpMLineIndex: answerIce.ice.sdpMLineIndex,
+        candidate: answerIce.ice.candidate
+    }));
   };
   
-  rtc.channels.push(dataChannel)
-  pC.createOffer(onOfferCreated, onError);
+  var onAnswer = function (interest, data) {
+    
+    answerIce = JSON.parse(ndn.DataUtils.toString(data.content));
+    console.log('got answer', answerIce)
+    peer.setRemoteDescription(new RTCSessionDescription(answerIce.sdp), onRemote)
+  };
+  
+  rtc.face.expressInterest(iceOffer, onAnswer);
+};
 
-  function onError(err) {
-    window.alert(err.message);
-  }
 
-  function onOfferCreated(description) {
-    offer = description;
-    var name = (new ndn.Name(rtcNameSpace + '/offer')).append(new ndn.Name.Component(offer.sdp))
-    console.log(offer)
-    console.log(ndn.DataUtils.toString(name.components[3].value), offer.sdp)
-    var onData = function (interest, data) {
-      var answer = JSON.parse(ndn.DataUtils.toString(data.content))
-      console.log( 'received answer', answer);
-      pC.setRemoteDescription(new RTCSessionDescription({type: 'answer', sdp: answer}))
-      console.log(pC)
+rtc.createPeerConnection = function (ndndid) {
+  var peer = new PeerConnection(servers, {optional: [{RtpDataChannels: true}]})
+  var dataChannel = peer.createDataChannel('ndn', null);
+  
+  peer.onicecandidate = function (evt) {
+    if (evt.candidate) {
+      console.log('got ICE candidate, ', evt.candidate);
+      sendOfferAndIceCandidate(ndndid, peer, peer.offer, evt.candidate);
+      peer.onicecandidate = null;
     };
-    function time() {return rtc.face.expressInterest(name, onData)};
-    setTimeout(time, 1000)
-    pC.setLocalDescription(offer, onLocalDescriptionSet, onError);
+  };
+  
+  function onOfferCreated(offer){
+    peer.offer = offer;
+    peer.setLocalDescription(offer, onLocalDescriptionSet);
   }
 
   function onLocalDescriptionSet() {
     // after this function returns, pc1 will start firing icecandidate events
-    
-    
-  }
-  function onRemoteDescriptionSet() {
-    pC.createAnswer(onAnswerCreated, onError);
-  }
-  function onAnswerCreated(description) {
-    answer = description;
-    pC.setLocalDescription(answer, onLocalDescriptionSet, onError);
-  }
+    console.log('local description set, ', peer);
+  };
+  
+  peer.createOffer(onOfferCreated);
+  return new rtc.transport(dataChannel)
 };
 
+var onRTCInterest = function (prefix, interest, transport) {
+  
+  var nfblob = JSON.parse(ndn.DataUtils.toString(interest.name.components[3].value))
+  var candidate = nfblob.candidate;
+  
+  console.log(nfblob);
+  
+  var offer = {
+    type: "offer",
+    sdp: nfblob.sdp
+  };
+  
+  var peer = new PeerConnection(servers, {optional: [{RtpDataChannels: true}]});
+  
+  peer.onicecandidate = function (evt) {
+    peer.answer.ice = evt.candidate
+    var string = JSON.stringify(peer.answer);
+    var sending = new ndn.ndnbuf(string)
+    var data = new ndn.Data(interest.name, new ndn.SignedInfo(), sending)
+    data.signedInfo.setFields()
+    data.sign();
+    var encoded = data.encode()
+    
+    transport.send(encoded);
+    console.log('sent answer', peer);
+    peer.onicecandidate = null;
+  };
+  
+  peer.ondatachannel = function (evt) {
+    console.log('got data channel, ', evt.channel );
+    var dataChannel = evt.channel
+    var transport = new rtc.transport(dataChannel)
+    
+    
+    console.log('webrtc NDN transport!', window.transport, peer);
+  };
+  
+  peer.setRemoteDescription(new RTCSessionDescription(offer), onRemoteSet)
+  
+  
+  var onCreated = function(sdp) {
+    peer.setLocalDescription(sdp)
+    peer.answer = {};
+    peer.answer.sdp = sdp
 
+  };
+  
+  function onRemoteSet() {
+    peer.addIceCandidate(new RTCIceCandidate({
+      sdpMLineIndex: candidate.sdpMLineIndex,
+      candidate: candidate.candidate
+    }));
+    peer.createAnswer(onCreated)
+  };
+  
+  
+  
+  
+  
 
+};
+
+rtc.face.registerPrefix(new ndn.Name(rtcNameSpace), onRTCInterest)
 
 module.exports = rtc;
 
@@ -358,6 +415,8 @@ var ndn = require('ndn-browser-shim');
 var Name = ndn.Name;
 var utils = require('./utils.js')
 
+var rFace; // Currently a face towards server ndnd; eventually inward facing to 'daemon'
+
 /**
  * Database constructor
  * @prefix: application prefix (used as database name) STRING (may contain globally routable prefix)
@@ -365,19 +424,19 @@ var utils = require('./utils.js')
 var ndnr = function (prefix, faceParam, callback) {
 
   if(!indexedDBOk) return console.log('no indexedDb');  // No IndexedDB support
-  var prefixUri = (new ndn.Name(prefix)).toUri(),           // normalize 
+  var prefixUri = (new ndn.Name(prefix)).toUri(),       // normalize 
       initDb = {};           
   
   this.prefix = prefixUri
   
   
   if (faceParam) {
-    this.interestHandler.face = new ndn.Face(faceParam)
+    rFace = new ndn.Face(faceParam)
   } else {
-    this.interestHandler.face = new ndn.Face({host: location.host.split(':')[0], port: 9696})
+    rFace = new ndn.Face({host: location.host.split(':')[0], port: 9696})
   };
   
-  this.interestHandler.face.registerPrefix(new ndn.Name(prefix), this.interestHandler);
+  rFace.registerPrefix(new ndn.Name(prefix), this.interestHandler);
   
   initDb.onupgradeneeded = function(e) {
     console.log("Version 1 of database ", prefixUri, "created");
@@ -451,7 +510,7 @@ ndnr.prototype.put = function (name, data, callback) {
           action.onsuccess = function (e) {
             buildObjectStoreTree(new ndn.Name(dbName), objectStoreName);
             if (callback != undefined) {
-              callback(name, hook.interestHandler.face);
+              callback(name, rFace);
             };
             
           };
