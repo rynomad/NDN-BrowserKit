@@ -1,5 +1,5 @@
 window.ndn = require('../index.js');
 
-window.transport = ndn.rtc.createPeerConnection();
+window.Face = ndn.d.newFace();
 
 console.log(window.transport)

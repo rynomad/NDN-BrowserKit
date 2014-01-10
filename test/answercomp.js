@@ -10,8 +10,25 @@ module.exports = ndn;
 },{"./lib/ndn-d.js":2,"./lib/ndn-io.js":3,"./lib/ndn-rtc.js":4,"./lib/repo.js":5,"./lib/utils.js":6,"ndn-browser-shim":7}],2:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
 var utils = require('./utils.js');
+var forge = require('node-forge')
+var pki = forge.pki
+
+var keys = pki.rsa.generateKeyPair(2048);
+var cert = pki.createCertificate();
+cert.publicKey = keys.publicKey;
+cert.serialNumber = '01';
+cert.validity.notBefore = new Date();
+cert.validity.notAfter = new Date();
+cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
+cert.sign(keys.privateKey);
+var pem = pki.certificateToPem(cert);
+console.log(pem, keys)
 
 ndn.rtc = require('./ndn-rtc.js');
+
+var appPrefix = new ndn.Name('app')
+
+
 
 var daemon = {};
 daemon.Faces = [];
@@ -27,16 +44,28 @@ var localFace = new ndn.Face({host: 0, port:0, getTransport: function(){ return 
 
 daemon.Faces.push(localFace);
 
+daemon.onInterest = function(prefix, interest, transport) {
+  console.log('recieved interest, ', interest);
+};
+
+
 daemon.newFace = function(ndndid) {
-  transport = ndn.rtc.createPeerConnection(ndndid)
-  var face = new ndn.Face({host: 0, port: 0, getTransport: function(){return transport}, ndndid: ndndid})
+  var transport = ndn.rtc.createPeerConnection(ndndid);
+  var face = new ndn.Face({
+    host: 0, 
+    port: 0, 
+    getTransport: function(){return transport}
+  })
+  face.registerPrefix(new ndn.Name('stuff'))
   daemon.Faces.push(face)
 };
 
 
+
+
 module.exports = daemon;
 
-},{"./ndn-rtc.js":4,"./utils.js":6,"ndn-browser-shim":7}],3:[function(require,module,exports){
+},{"./ndn-rtc.js":4,"./utils.js":6,"ndn-browser-shim":7,"node-forge":8}],3:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
 var utils = require('./utils.js');
 var io = {};
@@ -212,7 +241,9 @@ rtc.face = new ndn.Face({host: location.host.split(':')[0], port: 9696})
 
 rtc.transport = function (dataChannel) {
   this.dc = dataChannel
-  
+  this.dc.onopen = function(ev) {
+    console.log('transport open ', ev)
+  }
 };
 
 
@@ -224,11 +255,11 @@ rtc.transport = function (dataChannel) {
  */
 rtc.transport.prototype.connect = function(face, onopenCallback) 
 {
-  console.log(this) 
+  console.log(this, onopenCallback) 
   
   this.dc.binaryType = "arraybuffer";
   
-    this.elementReader = new BinaryXmlElementReader(face);
+  this.elementReader = new BinaryXmlElementReader(face);
   var self = this;
   this.dc.onmessage = function(ev) {
     var result = atob(ev.data);
@@ -248,6 +279,7 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
       if (LOG > 3) console.log('BINARY RESPONSE IS ' + bytearray.toString('hex'));
       
       try {
+                console.log(self, face)
                 // Find the end of the binary XML element and call face.onReceivedElement.
                 self.elementReader.onReceivedData(bytearray);
       } catch (ex) {
@@ -262,7 +294,7 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
     if (LOG > 3) console.log('dc.onopen: WebRTC connection opened.');
     if (LOG > 3) console.log('dc.onopen: ReadyState: ' + this.readyState);
         // Face.registerPrefix will fetch the ndndid when needed.
-        
+     onopenCallback();
         
   }
   
@@ -281,7 +313,7 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
     face.onclose();
     //console.log("NDN.onclose event fired.");
   }
-  onopenCallback();
+ 
 };
 
 /**
@@ -403,12 +435,15 @@ var onRTCInterest = function (prefix, interest, transport) {
   };
   
   peer.ondatachannel = function (evt) {
-    console.log('got data channel, ', evt.channel );
     var dataChannel = evt.channel
     var transport = new rtc.transport(dataChannel)
-    var face = new ndn.Face({host: 0, port: 0, getTransport: function(){return transport}, ndndid: d.signedInfo.publisher.publisherPublicKeyDigest})
+    
+    var face = new ndn.Face({host: 0, port: 0, getTransport: function(){return transport}})
+    function cb() {return}
+    transport.connect(face, cb)
     ndn.d.Faces.push(face)
-    console.log('webrtc NDN transport!', window.transport, peer);
+    console.log('webrtc NDN Face!', face);
+    //face.registerPrefix(new ndn.Name('app'), ndn.d.onInterest)
   };
   
   peer.setRemoteDescription(new RTCSessionDescription(offer), onRemoteSet)
@@ -428,11 +463,6 @@ var onRTCInterest = function (prefix, interest, transport) {
     }));
     peer.createAnswer(onCreated)
   };
-  
-  
-  
-  
-  
 
 };
 
@@ -11737,7 +11767,97 @@ exports.ndnbuf = ndnbuf;
 module.exports = exports;
 
 },{}],8:[function(require,module,exports){
+/**
+ * Node.js module for Forge.
+ *
+ * @author Dave Longley
+ *
+ * Copyright 2011-2013 Digital Bazaar, Inc.
+ */
+(function() {
+var name = 'forge';
+if(typeof define !== 'function') {
+  // NodeJS -> AMD
+  if(typeof module === 'object' && module.exports) {
+    var nodeJS = true;
+    define = function(ids, factory) {
+      factory(require, module);
+    };
+  }
+  // <script>
+  else {
+    if(typeof forge === 'undefined') {
+      // set to true to disable native code if even it's available
+      forge = {disableNativeCode: false};
+    }
+    return;
+  }
+}
+// AMD
+var deps;
+var defineFunc = function(require, module) {
+  module.exports = function(forge) {
+    var mods = deps.map(function(dep) {
+      return require(dep);
+    });
+    // handle circular dependencies
+    forge = forge || {};
+    forge.defined = forge.defined || {};
+    if(forge.defined[name]) {
+      return forge[name];
+    }
+    forge.defined[name] = true;
+    for(var i = 0; i < mods.length; ++i) {
+      mods[i](forge);
+    }
+    return forge;
+  };
+  // set to true to disable native code if even it's available
+  module.exports.disableNativeCode = false;
+  module.exports(module.exports);
+};
+var tmpDefine = define;
+define = function(ids, factory) {
+  deps = (typeof ids === 'string') ? factory.slice(2) : ids.slice(2);
+  if(nodeJS) {
+    delete define;
+    return tmpDefine.apply(null, Array.prototype.slice.call(arguments, 0));
+  }
+  define = tmpDefine;
+  return define.apply(null, Array.prototype.slice.call(arguments, 0));
+};
+define([
+  'require',
+  'module',
+  './aes',
+  './aesCipherSuites',
+  './asn1',
+  './debug',
+  './des',
+  './hmac',
+  './log',
+  './pbkdf2',
+  './pem',
+  './pkcs7',
+  './pkcs1',
+  './pkcs12',
+  './pki',
+  './prng',
+  './pss',
+  './random',
+  './rc2',
+  './task',
+  './tls',
+  './util',
+  './md',
+  './mgf1'
+], function() {
+  defineFunc.apply(null, Array.prototype.slice.call(arguments, 0));
+});
+})();
+
+},{}],9:[function(require,module,exports){
 window.ndn = require('../index.js')
 
-},{"../index.js":1}]},{},[8])
+},{"../index.js":1}]},{},[9])
 ;
