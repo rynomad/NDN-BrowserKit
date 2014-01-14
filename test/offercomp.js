@@ -1,11 +1,12 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
+ndn.d = require('./lib/ndn-d.js')
 ndn.r = require('./lib/repo.js');
 ndn.io = require('./lib/ndn-io.js');
 ndn.utils = require('./lib/utils.js');
 ndn.rtc = require('./lib/ndn-rtc.js');
 ndn.globalKeyManager = require('./lib/ndn-keygen.js')
-ndn.d = require('./lib/ndn-d.js')
+
 
 module.exports = ndn;
 
@@ -42,18 +43,22 @@ var PitEntry = function PitEntry(interest, face)
   this.face = face;
 }
 
+
 var ForwarderFace = function ForwarderFace(opts)
 {
   var face = new ndn.Face(opts);
   var self = this
   face.onReceivedElement = function(element)
   {
+    console.log("got element in forwarderFace ", element)
     var decoder = new BinaryXMLDecoder(element);
     // Dispatch according to packet type
     if (decoder.peekDTag(NDNProtocolDTags.Interest)) {
       var interest = new Interest();
       interest.from_ndnb(decoder);
       if (LOG > 3) console.log("Interest packet received: " + interest.name.toUri() + "\n");
+
+      if (LOG > 3) console.log('Interest packet received.');
 
       // Add to the PIT.
       PIT.push(new PitEntry(interest, this));
@@ -73,7 +78,7 @@ var ForwarderFace = function ForwarderFace(opts)
             };
           };
         };
-      };
+      }
     }
     else if (decoder.peekDTag(NDNProtocolDTags.Data)) {
 
@@ -81,141 +86,17 @@ var ForwarderFace = function ForwarderFace(opts)
 
       var data = new Data();
       data.from_ndnb(decoder);
+      // Send the data packet to the face for each matching PIT entry.
+      // Iterate backwards so we can remove the entry and keep iterating.
+      for (var i = PIT.length - 1; i >= 0; --i) {
+        if (PIT[i].interest.matchesName(data.name)) {
+          if (LOG > 3) console.log("Sending Data to match interest " + PIT[i].interest.name.toUri() + "\n");
+          PIT[i].face.transport.send(element);
 
-      var pitEntry = Face.getEntryForExpressedInterest(data.name);
-      if (pitEntry != null) {
-        // Cancel interest timer
-        clearTimeout(pitEntry.timerID);
-
-        // Remove PIT entry from Face.PITTable
-        var index = Face.PITTable.indexOf(pitEntry);
-        if (index >= 0)
-          Face.PITTable.splice(index, 1);
-
-        var currentClosure = pitEntry.closure;
-
-        if (this.verify == false) {
-          // Pass content up without verifying the signature
-          currentClosure.upcall(Closure.UPCALL_CONTENT_UNVERIFIED, new UpcallInfo(this, pitEntry.interest, 0, data));
-          return;
-        }
-
-        // Key verification
-
-        // Recursive key fetching & verification closure
-        var KeyFetchClosure = function KeyFetchClosure(content, closure, key, sig, wit) {
-          this.data = content;  // unverified data packet object
-          this.closure = closure;  // closure corresponding to the data
-          this.keyName = key;  // name of current key to be fetched
-
-          Closure.call(this);
-        };
-
-        var thisNDN = this;
-        KeyFetchClosure.prototype.upcall = function(kind, upcallInfo) {
-          if (kind == Closure.UPCALL_INTEREST_TIMED_OUT) {
-            console.log("In KeyFetchClosure.upcall: interest time out.");
-            console.log(this.keyName.contentName.toUri());
-          }
-          else if (kind == Closure.UPCALL_CONTENT) {
-            var rsakey = new Key();
-            rsakey.readDerPublicKey(upcallInfo.data.content);
-            var verified = data.verify(rsakey);
-
-            var flag = (verified == true) ? Closure.UPCALL_CONTENT : Closure.UPCALL_CONTENT_BAD;
-            this.closure.upcall(flag, new UpcallInfo(thisNDN, null, 0, this.data));
-
-            // Store key in cache
-            var keyEntry = new KeyStoreEntry(keylocator.keyName, rsakey, new Date().getTime());
-            Face.addKeyEntry(keyEntry);
-          }
-          else if (kind == Closure.UPCALL_CONTENT_BAD)
-            console.log("In KeyFetchClosure.upcall: signature verification failed");
-        };
-
-        if (data.signedInfo && data.signedInfo.locator && data.signature) {
-          if (LOG > 3) console.log("Key verification...");
-          var sigHex = DataUtils.toHex(data.signature.signature).toLowerCase();
-
-          var wit = null;
-          if (data.signature.witness != null)
-              //SWT: deprecate support for Witness decoding and Merkle hash tree verification
-              currentClosure.upcall(Closure.UPCALL_CONTENT_BAD, new UpcallInfo(this, pitEntry.interest, 0, data));
-
-          var keylocator = data.signedInfo.locator;
-          if (keylocator.type == KeyLocatorType.KEYNAME) {
-            if (LOG > 3) console.log("KeyLocator contains KEYNAME");
-
-            if (keylocator.keyName.contentName.match(data.name)) {
-              if (LOG > 3) console.log("Content is key itself");
-
-              var rsakey = new Key();
-              rsakey.readDerPublicKey(data.content);
-              var verified = data.verify(rsakey);
-              var flag = (verified == true) ? Closure.UPCALL_CONTENT : Closure.UPCALL_CONTENT_BAD;
-
-              currentClosure.upcall(flag, new UpcallInfo(this, pitEntry.interest, 0, data));
-
-              // SWT: We don't need to store key here since the same key will be stored again in the closure.
-            }
-            else {
-              // Check local key store
-              var keyEntry = Face.getKeyByName(keylocator.keyName);
-              if (keyEntry) {
-                // Key found, verify now
-                if (LOG > 3) console.log("Local key cache hit");
-                var rsakey = keyEntry.rsaKey;
-                var verified = data.verify(rsakey);
-                var flag = (verified == true) ? Closure.UPCALL_CONTENT : Closure.UPCALL_CONTENT_BAD;
-
-                // Raise callback
-                currentClosure.upcall(flag, new UpcallInfo(this, pitEntry.interest, 0, data));
-              }
-              else {
-                // Not found, fetch now
-                if (LOG > 3) console.log("Fetch key according to keylocator");
-                var nextClosure = new KeyFetchClosure(data, currentClosure, keylocator.keyName, sigHex, wit);
-                // TODO: Use expressInterest with callbacks, not Closure.
-                this.expressInterest(keylocator.keyName.contentName.getPrefix(4), nextClosure);
-              }
-            }
-          }
-          else if (keylocator.type == KeyLocatorType.KEY) {
-            if (LOG > 3) console.log("Keylocator contains KEY");
-
-            var rsakey = new Key();
-            rsakey.readDerPublicKey(keylocator.publicKey);
-            var verified = data.verify(rsakey);
-
-            var flag = (verified == true) ? Closure.UPCALL_CONTENT : Closure.UPCALL_CONTENT_BAD;
-            // Raise callback
-            currentClosure.upcall(Closure.UPCALL_CONTENT, new UpcallInfo(this, pitEntry.interest, 0, data));
-
-            // Since KeyLocator does not contain key name for this key,
-            // we have no way to store it as a key entry in KeyStore.
-          }
-          else {
-            var cert = keylocator.certificate;
-            console.log("KeyLocator contains CERT");
-            console.log(cert);
-            // TODO: verify certificate
-          }
-        }
-      } else {
-        // Send the data packet to the face for each matching PIT entry.
-        // Iterate backwards so we can remove the entry and keep iterating.
-        for (var i = PIT.length - 1; i >= 0; --i) {
-          if (PIT[i].interest.matchesName(data.name)) {
-            if (LOG > 3) console.log("Sending Data to match interest " + PIT[i].interest.name.toUri() + "\n");
-            PIT[i].face.transport.send(element);
-
-            // Remove this entry.
-            PIT.splice(i, 1);
-          }
+          // Remove this entry.
+          PIT.splice(i, 1);
         }
       }
-
-
     }
   };
   face.selfReg = function (prefix) {
@@ -233,39 +114,46 @@ var ForwarderFace = function ForwarderFace(opts)
 };
 
 
-// For now, hard code an initial forwarding connection.
 
 
-Bootstrap = new ForwarderFace({host: "rosewiki.org", port: 9696})
-Bootstrap.registerPrefix(new ndn.Name('ndnx'))
-Bootstrap.selfReg('ndnx')
-toUserSpace = new ForwarderFace({host:2, port:1, getTransport: function(){return new local.transport()}})
-console.log(toUserSpace, Bootstrap)
-toUserSpace.selfReg('ndnx')
+// Start with 3 faces (bootstrap to server, local to userspace, and local to keymanager)
+
+
+var Bootstrap = new ForwarderFace({host: "rosewiki.org", port: 9696})
+var keyFace = new ForwarderFace({host: 3, port: 4, getTransport: function(){return new local.transport}})
+var toUserSpace = new ForwarderFace({host: 2, port: 1, getTransport: function(){return new local.transport}})
+
+keyFace.transport.connect(keyFace, cb)
+keyFace.selfReg('/%C1.M.S.localhost/%C1.M.SRV/ndnd/KEY')
+
+var keyAnswer = new Face({host: 4, port: 3, getTransport: function() {return new local.transport}})
+keyAnswer.transport.connect(keyAnswer, cb);
+
+
+function onKeyInterest(prefix, interest, transport) {
+  var mykey = ndn.globalKeyManager.getKey()
+  console.log('got interest for my key', mykey)
+
+  var keyData = new Data(interest.name, new ndn.SignedInfo(), mykey.publicKeyDer)
+  keyData.sign()
+  var encoded = keyData.encode()
+  transport.send(encoded)
+}
+
+var RegisteredPrefix = function RegisteredPrefix(prefix, closure)
+{
+  this.prefix = prefix;        // String
+  this.closure = closure;  // Closure
+};
+
+var keyPrefix = new ndn.Name('/%C1.M.S.localhost/%C1.M.SRV/ndnd/KEY')
+var keyClosure = new Face.CallbackClosure(null, null, onKeyInterest, keyPrefix, keyAnswer.transport)
+Face.registeredPrefixTable.push(new RegisteredPrefix(keyPrefix, keyClosure))
+
 function cb(){return true};
 toUserSpace.transport.connect(toUserSpace, cb);
-FIB.push(Bootstrap);
+FIB.push(keyFace);
 FIB.push(toUserSpace);
-
-
-
-daemon.onInterest = function(prefix, interest, transport) {
-  console.log('recieved interest, ', interest);
-};
-
-
-daemon.newFace = function(ndndid) {
-  var transport = ndn.rtc.createPeerConnection(ndndid);
-  var face = new ndn.Face({
-    host: 0,
-    port: 0,
-    getTransport: function(){return transport}
-  })
-  face.registerPrefix(new ndn.Name('stuff'))
-  daemon.Faces.push(face)
-};
-
-
 
 
 module.exports = daemon;
@@ -276,9 +164,8 @@ var utils = require('./utils.js');
 var local = require('./ndn-ports.js')
 var io = {};
 
-io.face = new ndn.Face({host: 1, port: 2, getTransport: function(){return new local.transport}})
-function cb() {return true}
-io.face.transport.connect(io.face, cb)
+
+
 
 io.fetch = function(name, type, whenGotten, whenNotGotten) {
   var contentArray = [];
@@ -409,12 +296,22 @@ io.publishObject = function(name, obj) {
   io.face.expressInterest(command)
 };
 
-io.announce = function(name) {
 
-};
+io.face = new ndn.Face({host: 1, port: 2, getTransport: function(){return new local.transport}})
+
+function cb() {
+  var keyName = new ndn.Name('/%C1.M.S.localhost/%C1.M.SRV/ndnd/KEY')
+  var inst = new ndn.Interest(keyName)
+  var onData = function(interest, data) {
+    console.log("got key data back: ", interest, data)
+  }
+  console.log("expressing interest for key")
+  io.face.expressInterest(inst, onData)
+}
 
 
 
+io.face.transport.connect(io.face, cb)
 
 module.exports = io;
 

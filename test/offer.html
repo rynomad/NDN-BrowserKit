@@ -1,14 +1,23 @@
 <html>
 <script src="offercomp.js"></script>
 <script>
-console.log(localStorage['certificate'])
-console.log(localStorage['publicKey'])
 
+function test(file) {
+  var reader  = new FileReader();
+  var t0 = new Date().getTime()
+  reader.onloadend = function () {
+    console.log((new Date().getTime()) - t0);
+  }
 
+  if (file) {
+    reader.readAsDataURL(file);
+  } else {
+  }
+}
 console.log(window.f1, window.f2)
 </script>
 
-<input id="image-file" type="file" onchange="ndn.io.publishFile(new ndn.Name('ndnx/mime/' + this.files[0].type + '/' + this.files[0].name), this.files[0])"/>
+<input id="image-file" type="file" onchange="test(this.files[0])"/>
 <body>
 </body>
 
