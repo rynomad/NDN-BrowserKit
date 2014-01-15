@@ -5,6 +5,7 @@ ndn.io = require('./lib/ndn-io.js');
 ndn.utils = require('./lib/utils.js');
 ndn.rtc = require('./lib/ndn-rtc.js');
 ndn.globalKeyManager = require('./lib/ndn-keygen.js')
+ndn.x = require('./lib/ndnx.js')
 
-
+window.LOG = 4
 module.exports = ndn;
