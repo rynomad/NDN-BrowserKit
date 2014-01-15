@@ -75,7 +75,7 @@ var ForwarderFace = function ForwarderFace(opts)
         } else {
           if (face.registeredPrefixes != undefined){
             for (var j = 0; j < face.registeredPrefixes.length; j++ ) {
-              if (face.registeredPrefixes[j] != null && face.registeredPrefixes[j].match(interest.name)) {
+              if (face.registeredPrefixes[j] != null && face.registeredPrefixes[j].match(interest.name) && (face.readyStatus == 0 || 'open')) {
                 face.transport.send(element);
               };
             };
@@ -290,7 +290,7 @@ prefii.ndnx.ndnid = new ndn.Name(['ndnx', key.publicKeyDigest])
 var Bootstrap = new ForwarderFace({host: "rosewiki.org", port: 9696})
 
 
-daemon.bs = Bootstrap
+
 
 function bcb(){
   Bootstrap.registerPrefix(prefii.ndnx);
@@ -326,7 +326,7 @@ function onKeyInterest(prefix, interest, transport) {
 
   transport.send(encoded)
 }
-
+daemon.bs = Bootstrap
 
 daemon.test = new ForwarderFace({host: 11, port: 10, getTransport: function() {return new local.transport}})
 daemon.test.transport.connect(daemon.test, cb)
@@ -672,7 +672,9 @@ module.exports = local;
 var ndn = require('ndn-browser-shim');
 var utils = require('./utils.js');
 var io = require('./ndn-io.js');
-var daemon = require('./ndn-d.js')
+var daemon = require('./ndn-d.js');
+var ForwarderFace = require('./ForwarderFace.js');
+var FIB = require('./FIB.js')
 var BinaryXmlElementReader = ndn.BinaryXmlElementReader;
 var BinaryXmlWireFormat = ndn.BinaryXmlWireFormat;
 var ndnbuf = ndn.ndnbuf;
@@ -697,7 +699,7 @@ var servers = server = {
 rtc.transport = function (dataChannel) {
   this.dc = dataChannel
   this.dc.onopen = function(ev) {
-    console.log('transport open ', ev)
+    console.log('transport open ')
   }
 };
 
@@ -859,7 +861,12 @@ rtc.createPeerConnection = function (ndndid, face) {
   };
 
   peer.createOffer(onOfferCreated);
-  return new rtc.transport(dataChannel)
+  var transport = new rtc.transport(dataChannel)
+  var newFace = new ForwarderFace({host:0, port: 0, getTransport: function(){return transport}})
+  newFace.selfReg('ndnx')
+  FIB.push(newFace)
+
+  return newFace
 };
 
 rtc.onInterest = function (prefix, interest, transport) {
@@ -899,7 +906,9 @@ rtc.onInterest = function (prefix, interest, transport) {
     var dataChannel = evt.channel
     var transport = new rtc.transport(dataChannel)
 
-    var face = new ndn.Face({host: 0, port: 0, getTransport: function(){return transport}})
+    var face = new ForwarderFace({host: 0, port: 0, getTransport: function(){return transport}})
+    face.selfReg('ndnx')
+    FIB.push(face)
     function cb() {return}
     transport.connect(face, cb)
     ndn.d.Faces.push(face)
@@ -931,7 +940,7 @@ rtc.onInterest = function (prefix, interest, transport) {
 
 module.exports = rtc;
 
-},{"./ndn-d.js":6,"./ndn-io.js":8,"./utils.js":14,"ndn-browser-shim":15}],12:[function(require,module,exports){
+},{"./FIB.js":2,"./ForwarderFace.js":3,"./ndn-d.js":6,"./ndn-io.js":8,"./utils.js":14,"ndn-browser-shim":15}],12:[function(require,module,exports){
 var ndn = require("ndn-browser-shim");
 var utils = require("./utils.js");
 var rtc = require("./ndn-rtc.js");
@@ -960,16 +969,19 @@ var prefix = new ndn.Name(['ndnx', key.publicKeyDigest]);
 
 
 var onInterest = function(prefix, interest, transport) {
-  console.log("got intersest in ndnx system namespace", prefix, interest, transport, interest.name.components[3].toEscapedString());
-  if (interest.name.components[2].toEscapedString() == "newRTCface") {
-    console.log("interest ")
-    rtc.onInterest(prefix, interest, transport)
-  } else {
-    var data = new ndn.Data(interest.name, new ndn.SignedInfo(), key.publicKeyDer)
-    data.sign()
-    var encoded = data.encode()
-    transport.send(encoded)
-  };
+  if (LOG > 3) console.log("got intersest in ndnx system namespace", prefix, interest, transport);
+  if (interest.name.components.length > 2) {
+    if (interest.name.components[2].toEscapedString() == "newRTCface") {
+      console.log("interest ")
+      rtc.onInterest(prefix, interest, transport)
+    } else {
+      var data = new ndn.Data(interest.name, new ndn.SignedInfo(), key.publicKeyDer)
+      data.sign()
+      var encoded = data.encode()
+      transport.send(encoded)
+    };
+  }
+
 
 };
 var closure = new Face.CallbackClosure(null, null, onInterest, prefix, ndnx.transport);
