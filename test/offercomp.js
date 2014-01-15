@@ -294,6 +294,7 @@ daemon.bs = Bootstrap
 
 function bcb(){
   Bootstrap.registerPrefix(prefii.ndnx);
+  Bootstrap.selfReg(prefii.ndnx)
 };
 
 function cb(){return true};
@@ -337,7 +338,7 @@ var keyClosure = new Face.CallbackClosure(null, null, onKeyInterest, keyPrefix, 
 Face.registeredPrefixTable.push(new RegisteredPrefix(keyPrefix, keyClosure))
 toUserSpace.selfReg('stuff')
 toUserSpace.transport.connect(toUserSpace, cb);
-FIB.push(daemon.test);
+FIB.push(Bootstrap);
 FIB.push(keyFace);
 FIB.push(ndnx);
 FIB.push(toUserSpace);
@@ -673,6 +674,7 @@ var utils = require('./utils.js');
 var io = require('./ndn-io.js');
 var daemon = require('./ndn-d.js')
 var BinaryXmlElementReader = ndn.BinaryXmlElementReader;
+var BinaryXmlWireFormat = ndn.BinaryXmlWireFormat;
 var ndnbuf = ndn.ndnbuf;
 var Name = ndn.Name
 var Data = ndn.Data
@@ -795,17 +797,22 @@ rtc.transport.prototype.send = function(data)
 
 var rtcNameSpace = 'ndnx'
 
-function sendOfferAndIceCandidate(ndndid, peer, offer, candidate) {
-  var iceOffer = new Name([rtcNameSpace, ndndid, 'newRTCface'])
+function sendOfferAndIceCandidate(ndndid, face, peer, offer, candidate) {
+  var iceOffer = new Name(['ndnx', ndndid, 'newRTCface']);
 
-  var obj = {action: 'newRTCface', sdp: offer.sdp, ice: candidate}
-  string = JSON.stringify(obj)
-
-  var nfblob = new Data(new Name(), new ndn.SignedInfo(), new ndnbuf(string))
+  var obj = {action: 'newRTCface', sdp: offer.sdp, ice: candidate};
+  console.log(obj)
+  var string = JSON.stringify(obj)
+  console.log(string)
+  var nfblob = new Data(new Name(), new ndn.SignedInfo(), new ndn.ndnbuf(string))
   nfblob.signedInfo.setFields()
   nfblob.sign()
   var encoded = nfblob.encode()
 
+  var d = new ndn.Data()
+  d.decode(encoded, BinaryXmlWireFormat.instance)
+  console.log(ndn.DataUtils.toString(d))
+  console.log(JSON.parse(ndn.DataUtils.toString(d.content)))
   iceOffer.append(encoded)
 
   function onRemote(){
@@ -822,11 +829,11 @@ function sendOfferAndIceCandidate(ndndid, peer, offer, candidate) {
     peer.setRemoteDescription(new RTCSessionDescription(answerIce.sdp), onRemote)
   };
 
-  rtc.face.expressInterest(iceOffer, onAnswer);
+  face.expressInterest(iceOffer, onAnswer);
 };
 
 
-rtc.createPeerConnection = function (ndndid) {
+rtc.createPeerConnection = function (ndndid, face) {
   if (ndndid == undefined) {
     ndndid = 'filler'
   }
@@ -836,7 +843,7 @@ rtc.createPeerConnection = function (ndndid) {
   peer.onicecandidate = function (evt) {
     if (evt.candidate) {
       console.log('got ICE candidate, ', evt.candidate);
-      sendOfferAndIceCandidate(ndndid, peer, peer.offer, evt.candidate);
+      sendOfferAndIceCandidate(ndndid, face, peer, peer.offer, evt.candidate);
       peer.onicecandidate = null;
     };
   };
@@ -855,21 +862,13 @@ rtc.createPeerConnection = function (ndndid) {
   return new rtc.transport(dataChannel)
 };
 
-var onRTCInterest = function (prefix, interest, transport) {
-  var keyName = new ndn.Name()
-  var mykey = new ndn.Key()
-  mykey.fromPemString(localStorage['publicKey'], localStorage['privateKey'])
-  keyName.append('ndnx').append(mykey.publicKeyDigest)
-  console.log(typeof interest.name.components[1].value)
-  var ndndid = interest.name.components[1].value
-
-  if (interest.matches_name(keyName)) {
-    console.log('got interest for me,', true)
-  };
+rtc.onInterest = function (prefix, interest, transport) {
   var nfblob = interest.name.components[3].value
   var d = new Data();
   d.decode(nfblob)
-  var iceOffer = JSON.parse(ndn.DataUtils.toString(d.content))
+  var string = ndn.DataUtils.toString(d.content);
+  console.log(string)
+  var iceOffer = JSON.parse(string)
   console.log(iceOffer)
   var candidate = iceOffer.ice;
 
@@ -905,7 +904,7 @@ var onRTCInterest = function (prefix, interest, transport) {
     transport.connect(face, cb)
     ndn.d.Faces.push(face)
     console.log('webrtc NDN Face!', face);
-    //face.registerPrefix(new ndn.Name('ndnx'), onRTCInterest)
+    //face.registerPrefix(new ndn.Name('ndnx'), rtc.onInterest)
   };
 
   peer.setRemoteDescription(new RTCSessionDescription(offer), onRemoteSet)
@@ -947,7 +946,7 @@ var RegisteredPrefix = function RegisteredPrefix(prefix, closure)
   this.closure = closure;  // Closure
 };
 
-var ndnx = new Face({host:22, port: 21, getTransport: function() {return new local.transport}} );
+window.ndnx = new Face({host:22, port: 21, getTransport: function() {return new local.transport}} );
 
 var cb = function(){
 
@@ -961,11 +960,17 @@ var prefix = new ndn.Name(['ndnx', key.publicKeyDigest]);
 
 
 var onInterest = function(prefix, interest, transport) {
-  console.log("got intersest in ndnx system namespace", prefix, interest, transport);
-  var data = new ndn.Data(interest.name, new ndn.SignedInfo(), key.publicKeyDer)
-  data.sign()
-  var encoded = data.encode()
-  transport.send(encoded)
+  console.log("got intersest in ndnx system namespace", prefix, interest, transport, interest.name.components[3].toEscapedString());
+  if (interest.name.components[2].toEscapedString() == "newRTCface") {
+    console.log("interest ")
+    rtc.onInterest(prefix, interest, transport)
+  } else {
+    var data = new ndn.Data(interest.name, new ndn.SignedInfo(), key.publicKeyDer)
+    data.sign()
+    var encoded = data.encode()
+    transport.send(encoded)
+  };
+
 };
 var closure = new Face.CallbackClosure(null, null, onInterest, prefix, ndnx.transport);
 Face.registeredPrefixTable.push(new RegisteredPrefix(prefix, closure));
@@ -1650,7 +1655,7 @@ e),Closure.RESULT_ERR}};var DynamicBuffer=function(a){a||(a=16);this.array=new n
 DynamicBuffer.prototype.slice=function(a,b){return this.array.slice(a,b)};var DataUtils=function(){};exports.DataUtils=DataUtils;DataUtils.keyStr="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
 DataUtils.stringtoBase64=function(a){var b="",c,d,e="",f,g,h="",j=0;do c=a.charCodeAt(j++),d=a.charCodeAt(j++),e=a.charCodeAt(j++),f=c>>2,c=(c&3)<<4|d>>4,g=(d&15)<<2|e>>6,h=e&63,isNaN(d)?g=h=64:isNaN(e)&&(h=64),b=b+DataUtils.keyStr.charAt(f)+DataUtils.keyStr.charAt(c)+DataUtils.keyStr.charAt(g)+DataUtils.keyStr.charAt(h);while(j<a.length);return b};
 DataUtils.base64toString=function(a){var b="",c,d,e="",f,g="",h=0;/[^A-Za-z0-9\+\/\=]/g.exec(a)&&alert("There were invalid base64 characters in the input text.\nValid base64 characters are A-Z, a-z, 0-9, '+', '/',and '='\nExpect errors in decoding.");a=a.replace(/[^A-Za-z0-9\+\/\=]/g,"");do c=DataUtils.keyStr.indexOf(a.charAt(h++)),d=DataUtils.keyStr.indexOf(a.charAt(h++)),f=DataUtils.keyStr.indexOf(a.charAt(h++)),g=DataUtils.keyStr.indexOf(a.charAt(h++)),c=c<<2|d>>4,d=(d&15)<<4|f>>2,e=(f&3)<<6|g,
-b+=String.fromCharCode(c),64!=f&&(b+=String.fromCharCode(d)),64!=g&&(b+=String.fromCharCode(e));while(h<a.length);return b};DataUtils.toHex=function(){return ndnbuf.toString("hex")};DataUtils.stringToHex=function(a){for(var b="",c=0;c<a.length;++c)var d=a.charCodeAt(c),b=b+((16>d?"0":"")+d.toString(16));return b};DataUtils.toString=function(){return ndnbuf.toString()};DataUtils.toNumbers=function(a){return new ndnbuf(a,"hex")};
+b+=String.fromCharCode(c),64!=f&&(b+=String.fromCharCode(d)),64!=g&&(b+=String.fromCharCode(e));while(h<a.length);return b};DataUtils.toHex=function(a){return a.toString("hex")};DataUtils.stringToHex=function(a){for(var b="",c=0;c<a.length;++c)var d=a.charCodeAt(c),b=b+((16>d?"0":"")+d.toString(16));return b};DataUtils.toString=function(a){return a.toString()};DataUtils.toNumbers=function(a){return new ndnbuf(a,"hex")};
 DataUtils.hexToRawString=function(a){if("string"==typeof a){var b="";a.replace(/(..)/g,function(a){b+=String.fromCharCode(parseInt(a,16))});return b}};DataUtils.toNumbersFromString=function(a){return new ndnbuf(a,"binary")};DataUtils.stringToUtf8Array=function(a){return new ndnbuf(a,"utf8")};DataUtils.concatArrays=function(a){return ndnbuf.concat(a)};
 DataUtils.decodeUtf8=function(a){for(var b="",c=0,d=0,e=0;c<a.length;)if(d=a.charCodeAt(c),128>d)b+=String.fromCharCode(d),c++;else if(191<d&&224>d)e=a.charCodeAt(c+1),b+=String.fromCharCode((d&31)<<6|e&63),c+=2;else var e=a.charCodeAt(c+1),f=a.charCodeAt(c+2),b=b+String.fromCharCode((d&15)<<12|(e&63)<<6|f&63),c=c+3;return b};
 DataUtils.arraysEqual=function(a,b){if(!a.slice)throw Error("DataUtils.arraysEqual: a1 is not an array");if(!b.slice)throw Error("DataUtils.arraysEqual: a2 is not an array");if(a.length!=b.length)return!1;for(var c=0;c<a.length;++c)if(a[c]!=b[c])return!1;return!0};DataUtils.bigEndianToUnsignedInt=function(a){for(var b=0,c=0;c<a.length;++c)b<<=8,b+=a[c];return b};
@@ -1738,7 +1743,7 @@ Name.ContentDigestPrefix=new ndnbuf([193,46,77,46,71,193,1,170,2,133]);Name.Cont
 Name.fromEscapedString=function(a){a=unescape(a.trim());return null==a.match(/[^.]/)?2>=a.length?null:DataUtils.toNumbersFromString(a.substr(3,a.length-3)):DataUtils.toNumbersFromString(a)};Name.prototype.match=function(a){var b=this.components;a=a.components;if(b.length>a.length)return!1;for(var c=0;c<b.length;++c)if(!DataUtils.arraysEqual(b[c].getValue(),a[c].getValue()))return!1;return!0};
 var KeyManager=function(){this.certificate="MIIBmzCCAQQCCQC32FyQa61S7jANBgkqhkiG9w0BAQUFADASMRAwDgYDVQQDEwdheGVsY2R2MB4XDTEyMDQyODIzNDQzN1oXDTEyMDUyODIzNDQzN1owEjEQMA4GA1UEAxMHYXhlbGNkdjCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEA4X0wp9goqxuECxdULcr2IHr9Ih4Iaypg0Wy39URIup8/CLzQmdsh3RYqd55hqonu5VTTpH3iMLx6xZDVJAZ8OJi7pvXcQ2C4Re2kjL2c8SanI0RfDhlS1zJadfr1VhRPmpivcYawJ4aFuOLAi+qHFxtN7lhcGCgpW1OV60oXd58CAwEAATANBgkqhkiG9w0BAQUFAAOBgQDLOrA1fXzSrpftUB5Ro6DigX1Bjkf7F5Bkd69hSVp+jYeJFBBlsILQAfSxUZPQtD+2Yc3iCmSYNyxqu9PcufDRJlnvB7PG29+L3y9lR37tetzUV9eTscJ7rdp8Wt6AzpW32IJ/54yKNfP7S6ZIoIG+LP6EIxq6s8K1MXRt8uBJKw==";this.publicKey=
 "-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDhfTCn2CirG4QLF1QtyvYgev0i\nHghrKmDRbLf1REi6nz8IvNCZ2yHdFip3nmGqie7lVNOkfeIwvHrFkNUkBnw4mLum\n9dxDYLhF7aSMvZzxJqcjRF8OGVLXMlp1+vVWFE+amK9xhrAnhoW44sCL6ocXG03u\nWFwYKClbU5XrShd3nwIDAQAB\n-----END PUBLIC KEY-----";this.privateKey="-----BEGIN RSA PRIVATE KEY-----\nMIICXQIBAAKBgQDhfTCn2CirG4QLF1QtyvYgev0iHghrKmDRbLf1REi6nz8IvNCZ\n2yHdFip3nmGqie7lVNOkfeIwvHrFkNUkBnw4mLum9dxDYLhF7aSMvZzxJqcjRF8O\nGVLXMlp1+vVWFE+amK9xhrAnhoW44sCL6ocXG03uWFwYKClbU5XrShd3nwIDAQAB\nAoGAGkv6T6jC3WmhFZYL6CdCWvlc6gysmKrhjarrLTxgavtFY6R5g2ft5BXAsCCV\nbUkWxkIFSKqxpVNl0gKZCNGEzPDN6mHJOQI/h0rlxNIHAuGfoAbCzALnqmyZivhJ\nAPGijAyKuU9tczsst5+Kpn+bn7ehzHQuj7iwJonS5WbojqECQQD851K8TpW2GrRi\nzNgG4dx6orZxAaon/Jnl8lS7soXhllQty7qG+oDfzznmdMsiznCqEABzHUUKOVGE\n9RWPN3aRAkEA5D/w9N55d0ibnChFJlc8cUAoaqH+w+U3oQP2Lb6AZHJpLptN4y4b\n/uf5d4wYU5/i/gC7SSBH3wFhh9bjRLUDLwJAVOx8vN0Kqt7myfKNbCo19jxjVSlA\n8TKCn1Oznl/BU1I+rC4oUaEW25DjmX6IpAR8kq7S59ThVSCQPjxqY/A08QJBAIRa\nF2zGPITQk3r/VumemCvLWiRK/yG0noc9dtibqHOWbCtcXtOm/xDWjq+lis2i3ssO\nvYrvrv0/HcDY+Dv1An0CQQCLJtMsfSg4kvG/FRY5UMhtMuwo8ovYcMXt4Xv/LWaM\nhndD67b2UGawQCRqr5ghRTABWdDD/HuuMBjrkPsX0861\n-----END RSA PRIVATE KEY-----";
-this.key=null};KeyManager.prototype.getKey=function(){null===this.key&&(this.key=new Key,this.key.fromPemString(this.publicKey,this.privateKey));return this.key};var globalKeyManager=globalKeyManager||new KeyManager;exports.globalKeyManager=globalKeyManager;
+this.key=null};KeyManager.prototype.getKey=function(){null===this.key&&(this.key=new Key,this.key.fromPemString(this.publicKey,this.privateKey));return this.key};var globalKeyManager=globalKeyManager||new KeyManager;ndn.globalKeyManager=globalKeyManager;exports.globalKeyManager=globalKeyManager;
 var Data=function(a,b,c){this.name="string"==typeof a?new Name(a):a;this.signedInfo=b;this.content="string"==typeof c?DataUtils.toNumbersFromString(c):c;this.signature=new Signature;this.rawSignatureData=this.endContent=this.endSIG=this.startSIG=null};exports.Data=Data;
 Data.prototype.sign=function(){var a=this.encodeObject(this.name),b=this.encodeObject(this.signedInfo),c=this.encodeContent(),d=ndn.createSign("RSA-SHA256");d.update(a);d.update(b);d.update(c);a=new ndnbuf(d.sign(ndn.globalKeyManager.privateKey));this.signature.signature=a};Data.prototype.verify=function(a){if(null==a||null==a.publicKeyPem)throw Error("Cannot verify Data without a public key.");var b=ndn.createVerify("RSA-SHA256");b.update(this.rawSignatureData);return b.verify(a.publicKeyPem,this.signature.signature)};
 Data.prototype.encodeObject=function(a){var b=new BinaryXMLEncoder;a.to_ndnb(b);return b.getReducedOstream()};Data.prototype.encodeContent=function(){var a=new BinaryXMLEncoder;a.writeDTagElement(NDNProtocolDTags.Content,this.content);return a.getReducedOstream()};Data.prototype.saveRawData=function(a){a=a.slice(this.startSIG,this.endSIG);this.rawSignatureData=new ndnbuf(a)};Data.prototype.getElementLabel=function(){return NDNProtocolDTags.Data};
@@ -1836,9 +1841,9 @@ Face.FetchNdndidClosure.prototype.upcall=function(a,b){if(a==Closure.UPCALL_INTE
 this.prefix.toUri()+" ."),this.onRegisterFailed)this.onRegisterFailed(this.prefix)}else 3<LOG&&console.log("Got ndndid from ndnd."),this.face.ndndid=c.signedInfo.publisher.publisherPublicKeyDigest,3<LOG&&console.log(this.face.ndndid),this.face.registerPrefixHelper(this.prefix,this.callerClosure,this.flags);return Closure.RESULT_OK};
 Face.prototype.registerPrefixHelper=function(a,b,c){c=new ForwardingEntry("selfreg",a,null,null,c,2147483647);var d=new BinaryXMLEncoder;c.to_ndnb(d);c=d.getReducedOstream();d=new SignedInfo;d.setFields();c=new Data(new Name,d,c);c.sign();c=c.encode();c=new Name(["ndnx",this.ndndid,"selfreg",c]);c=new Interest(c);c.scope=1;3<LOG&&console.log("Send Interest registration packet.");Face.registeredPrefixTable.push(new RegisteredPrefix(a,b));this.transport.send(c.encode())};
 Face.prototype.onReceivedElement=function(a){3<LOG&&console.log("Complete element received. Length "+a.length+". Start decoding.");var b=new BinaryXMLDecoder(a);if(b.peekDTag(NDNProtocolDTags.Interest))3<LOG&&console.log("Interest packet received."),a=new Interest,a.from_ndnb(b),3<LOG&&console.log(a),3<LOG&&console.log(a.name.toUri()),b=getEntryForRegisteredPrefix(a.name),null!=b&&(3<LOG&&console.log("Found registered prefix for "+a.name.toUri()),a=new UpcallInfo(this,a,0,null),b.closure.upcall(Closure.UPCALL_INTEREST,
-a)==Closure.RESULT_INTEREST_CONSUMED&&null!=a.data&&this.transport.send(a.data.encode()));else if(b.peekDTag(NDNProtocolDTags.Data)){3<LOG&&console.log("Data packet received.");var c=new Data;c.from_ndnb(b);a=Face.getEntryForExpressedInterest(c.name);if(null!=a)if(clearTimeout(a.timerID),b=Face.PITTable.indexOf(a),0<=b&&Face.PITTable.splice(b,1),b=a.closure,!1==this.verify)b.upcall(Closure.UPCALL_CONTENT_UNVERIFIED,new UpcallInfo(this,a.interest,0,c));else{var d=function(a,b,c){this.data=a;this.closure=
-b;this.keyName=c;Closure.call(this)},e=this;d.prototype.upcall=function(a,b){if(a==Closure.UPCALL_INTEREST_TIMED_OUT)console.log("In KeyFetchClosure.upcall: interest time out."),console.log(this.keyName.contentName.toUri());else if(a==Closure.UPCALL_CONTENT){var d=new Key;d.readDerPublicKey(b.data.content);var f=!0==c.verify(d)?Closure.UPCALL_CONTENT:Closure.UPCALL_CONTENT_BAD;this.closure.upcall(f,new UpcallInfo(e,null,0,this.data));d=new KeyStoreEntry(g.keyName,d,(new Date).getTime());Face.addKeyEntry(d)}else a==
-Closure.UPCALL_CONTENT_BAD&&console.log("In KeyFetchClosure.upcall: signature verification failed")};if(c.signedInfo&&c.signedInfo.locator&&c.signature){3<LOG&&console.log("Key verification...");var f=DataUtils.toHex(c.signature.signature).toLowerCase();null!=c.signature.witness&&b.upcall(Closure.UPCALL_CONTENT_BAD,new UpcallInfo(this,a.interest,0,c));var g=c.signedInfo.locator;if(g.type==KeyLocatorType.KEYNAME)if(3<LOG&&console.log("KeyLocator contains KEYNAME"),g.keyName.contentName.match(c.name))3<
+a)==Closure.RESULT_INTEREST_CONSUMED&&null!=a.data&&this.transport.send(a.data.encode()));else if(b.peekDTag(NDNProtocolDTags.Data)){3<LOG&&console.log("Data packet received.");var c=new Data;c.from_ndnb(b);a=Face.getEntryForExpressedInterest(c.name);console.log(a);if(null!=a)if(clearTimeout(a.timerID),b=Face.PITTable.indexOf(a),0<=b&&Face.PITTable.splice(b,1),b=a.closure,!1==this.verify)b.upcall(Closure.UPCALL_CONTENT_UNVERIFIED,new UpcallInfo(this,a.interest,0,c));else{var d=function(a,b,c){this.data=
+a;this.closure=b;this.keyName=c;Closure.call(this)},e=this;d.prototype.upcall=function(a,b){if(a==Closure.UPCALL_INTEREST_TIMED_OUT)console.log("In KeyFetchClosure.upcall: interest time out."),console.log(this.keyName.contentName.toUri());else if(a==Closure.UPCALL_CONTENT){var d=new Key;d.readDerPublicKey(b.data.content);var f=!0==c.verify(d)?Closure.UPCALL_CONTENT:Closure.UPCALL_CONTENT_BAD;this.closure.upcall(f,new UpcallInfo(e,null,0,this.data));d=new KeyStoreEntry(g.keyName,d,(new Date).getTime());
+Face.addKeyEntry(d)}else a==Closure.UPCALL_CONTENT_BAD&&console.log("In KeyFetchClosure.upcall: signature verification failed")};if(c.signedInfo&&c.signedInfo.locator&&c.signature){3<LOG&&console.log("Key verification...");var f=DataUtils.toHex(c.signature.signature).toLowerCase();null!=c.signature.witness&&b.upcall(Closure.UPCALL_CONTENT_BAD,new UpcallInfo(this,a.interest,0,c));var g=c.signedInfo.locator;if(g.type==KeyLocatorType.KEYNAME)if(3<LOG&&console.log("KeyLocator contains KEYNAME"),g.keyName.contentName.match(c.name))3<
 LOG&&console.log("Content is key itself"),d=new Key,d.readDerPublicKey(c.content),d=c.verify(d),d=!0==d?Closure.UPCALL_CONTENT:Closure.UPCALL_CONTENT_BAD,b.upcall(d,new UpcallInfo(this,a.interest,0,c));else{var h=Face.getKeyByName(g.keyName);h?(3<LOG&&console.log("Local key cache hit"),d=h.rsaKey,d=c.verify(d),d=!0==d?Closure.UPCALL_CONTENT:Closure.UPCALL_CONTENT_BAD,b.upcall(d,new UpcallInfo(this,a.interest,0,c))):(3<LOG&&console.log("Fetch key according to keylocator"),a=new d(c,b,g.keyName,f,null),
 this.expressInterest(g.keyName.contentName.getPrefix(4),a))}else g.type==KeyLocatorType.KEY?(3<LOG&&console.log("Keylocator contains KEY"),d=new Key,d.readDerPublicKey(g.publicKey),d=c.verify(d),d=!0==d?Closure.UPCALL_CONTENT:Closure.UPCALL_CONTENT_BAD,b.upcall(Closure.UPCALL_CONTENT,new UpcallInfo(this,a.interest,0,c))):(a=g.certificate,console.log("KeyLocator contains CERT"),console.log(a))}}}else console.log("Incoming packet is not Interest or Data. Discard now.")};
 Face.prototype.connectAndExecute=function(a){var b=this.getHostAndPort();if(null==b)console.log("ERROR: No more hosts from getHostAndPort"),this.host=null;else if(b.host==this.host&&b.port==this.port)console.log("ERROR: The host returned by getHostAndPort is not alive: "+this.host+":"+this.port);else{this.host=b.host;this.port=b.port;0<LOG&&console.log("connectAndExecute: trying host from getHostAndPort: "+this.host);b=new Interest(new Name("/"));b.interestLifetime=4E3;var c=this,d=setTimeout(function(){0<
