@@ -64,8 +64,16 @@ var ForwarderFace = function ForwarderFace(opts)
       window.interest = interest
       console.log(interest)
       // Add to the PIT.
-      PIT.push(new PitEntry(interest, this));
-      console.log('interest recieved in forwarding face',  FIB)
+      for (var i = 0; i < PIT.length; i++) {
+        console.log(PIT[i].interest.nonce)
+        if (PIT[i].interest.nonce.toString() == interest.nonce.toString()) {
+          return;
+        };
+      };
+      var pEntry = new PitEntry(interest, this);
+      console.log(pEntry)
+      PIT.push(pEntry);
+      console.log('interest recieved in forwarding face', PIT,  FIB)
       // Send the interest to the matching faces in the FIB.
       for (var i = 0; i < FIB.length; ++i) {
         var face = FIB[i];
@@ -267,6 +275,7 @@ var Closure = ndn.Closure;
 var UpcallInfo = ndn.UpcallInfo;
 var FIB = require("./FIB.js");
 var PIT = require("./PIT.js");
+var Faces = require("./ndn-faces.js")
 require('./ndnx.js');
 
 var daemon = {};
@@ -295,6 +304,7 @@ var Bootstrap = new ForwarderFace({host: "rosewiki.org", port: 9696})
 function bcb(){
   Bootstrap.registerPrefix(prefii.ndnx);
   Bootstrap.selfReg(prefii.ndnx)
+  Bootstrap.selfReg('wiki')
 };
 
 function cb(){return true};
@@ -308,7 +318,6 @@ var ndnx = new ForwarderFace({host:21, port:22, getTransport: function(){return 
 
 ndnx.selfReg(new ndn.Name(['ndnx', key.publicKeyDigest]))
 ndnx.transport.connect(ndnx, cb)
-FIB.push(ndnx)
 
 keyFace.transport.connect(keyFace, cb)
 keyFace.selfReg('/%C1.M.S.localhost/%C1.M.SRV/ndnd/KEY')
@@ -343,14 +352,20 @@ FIB.push(keyFace);
 FIB.push(ndnx);
 FIB.push(toUserSpace);
 
+Faces.push(Bootstrap);
+Faces.push(keyFace);
+Faces.push(ndnx);
+Faces.push(toUserSpace);
+
 daemon.forwarderFace = ForwarderFace
 module.exports = daemon;
 
-},{"./FIB.js":2,"./ForwarderFace.js":3,"./PIT.js":4,"./ndn-dc.js":7,"./ndn-keygen.js":10,"./ndn-ports.js":11,"./ndnx.js":13,"./utils.js":15,"ndn-browser-shim":16}],7:[function(require,module,exports){
+},{"./FIB.js":2,"./ForwarderFace.js":3,"./PIT.js":4,"./ndn-dc.js":7,"./ndn-faces.js":8,"./ndn-keygen.js":10,"./ndn-ports.js":11,"./ndnx.js":13,"./utils.js":15,"ndn-browser-shim":16}],7:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
 var rtc = require('./ndn-rtc.js')
 var ForwarderFace = require('./ForwarderFace.js')
 var ndnx = require('./ndnx.js')
+var FIB = require('./FIB.js')
 var Faces = require('./ndn-faces.js')
 var ndndc = {}
 
@@ -364,16 +379,19 @@ ndndc.add = function(uri, arg2, arg3, arg4) {
       host: arg3,
       port: arg4,
     })
-    face.registerPrefix(new ndn.Name(uri))
+    face.selfReg(uri)
     face.transport.faceID = Faces.length
-    Faces.push[face]
+    Faces.push(face)
+    FIB.push(face)
     return face;
   } else if (arg2 == "rtc") {
     var ndndid = arg3
     var face = rtc.createPeerConnection(ndndid, ndnx)    // we have to discover host and port via ICE etc. so use arg3 should contain the ndndid of the target to bootstrap signaling
+    Faces.push(face)
     var id = Faces.length;
     face.transport.faceID = id;
-    Faces.push(face);
+    face.selfReg(uri);
+    FIB.push(face);
     face.onopen = function() {
       console.log(id, this, face, "triggered onopen from ndn.d.c.add rtc")
     }
@@ -396,11 +414,14 @@ ndndc.del = function (uri, faceID) {
 
 ndndc.destroyFace = function(faceID) {
   delete Faces[faceID]
+  for (var i = FIB.length - 1; i >= 0; i--) {
+    if (FIB[i].faceID = faceID) delete FIB[i]
+  }
 }
 
 
 module.exports = ndndc
-},{"./ForwarderFace.js":3,"./ndn-faces.js":8,"./ndn-rtc.js":12,"./ndnx.js":13,"ndn-browser-shim":16}],8:[function(require,module,exports){
+},{"./FIB.js":2,"./ForwarderFace.js":3,"./ndn-faces.js":8,"./ndn-rtc.js":12,"./ndnx.js":13,"ndn-browser-shim":16}],8:[function(require,module,exports){
 var faces = [];
 module.exports = faces;
 },{}],9:[function(require,module,exports){
@@ -436,13 +457,17 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
         for (var i = 0; i < finalSegmentNumber; i++) {
           if (contentArray[i] == undefined) {
             var newName = co.name.getPrefix(-1).appendSegment(i)
-            io.face.expressInterest(newName, onData, onTimeout)
+            var newInterest = new ndn.Interest(newName)
+            utils.setNonce(newInterest)
+            io.face.expressInterest(newInterest, onData, onTimeout)
           };
         };
       };
     } else {
       var newName = co.name.getPrefix(-1).appendSegment(segmentNumber - 1);
-      io.face.expressInterest(newName, onData, onTimeout);
+      var newInterest = new ndn.Interest(newName)
+      utils.setNonce(newInterest);
+      io.face.expressInterest(newInterest, onData, onTimeout);
     };
   };
   var onTimeout = function(interest) {
@@ -465,6 +490,8 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
   };
 
   interest.childSelector = 1;
+  utils.setNonce(interest)
+  console.log('does my', interest, 'have a nonce now?')
   io.face.expressInterest(interest, onData, onTimeout);
 };
 
@@ -890,7 +917,10 @@ function sendOfferAndIceCandidate(ndndid, face, peer, offer, candidate) {
     peer.setRemoteDescription(new RTCSessionDescription(answerIce.sdp), onRemote)
   };
 
-  face.expressInterest(iceOffer, onAnswer);
+  var offerInterest = new ndn.Interest(iceOffer)
+  console.log(offerInterest);
+  utils.setNonce(offerInterest);
+  face.expressInterest(offerInterest, onAnswer);
 };
 
 
@@ -923,8 +953,6 @@ rtc.createPeerConnection = function (ndndid, face) {
   var transport = new rtc.transport(dataChannel)
   var newFace = new ForwarderFace({host:0, port: 0, getTransport: function(){return transport}})
   newFace.selfReg('ndnx')
-  FIB.push(newFace)
-
   return newFace
 };
 
@@ -967,7 +995,6 @@ rtc.onInterest = function (prefix, interest, transport) {
 
     var face = new ForwarderFace({host: 0, port: 0, getTransport: function(){return transport}})
     face.selfReg('ndnx')
-    FIB.push(face)
     function cb() {
       face.ndndid = d.signedInfo.publisher.publisherPublicKeyDigest
       Faces.push(face)
@@ -1047,14 +1074,26 @@ var onInterest = function(prefix, interest, transport) {
       var decoder = new ndn.BinaryXMLDecoder(d.content);
       fe.from_ndnb(decoder)
 
-      fe.ndndID = d.signedInfo.publisher.publisherPublicKeyDigest;
+      var ndndID = d.signedInfo.publisher.publisherPublicKeyDigest;
       console.log(Faces, fe.ndndID)
       for(i = 0; i < Faces.length; i++ ){
-        console.log(Faces[i].ndndid == fe.ndndID)
-        if (Faces[i].ndndid.toString() == fe.ndndID.toString()) {
-          fe.faceID = i;
-        }
-      }
+        if (Faces[i].ndndid.toString() == ndndID.toString()) {
+          fe.faceID = i
+          Faces[i].selfReg(fe.prefixName)
+        };
+      };
+      var response = new ndn.ForwardingEntry(null, fe.prefixName, ndndID, fe.faceID, fe.flags, fe.lifetime);
+      var encoder = new ndn.BinaryXMLEncoder();
+      response.to_ndnb(encoder);
+      var bytes = encoder.getReducedOstream();
+
+      var si = new ndn.SignedInfo();
+      si.setFields();
+
+      var respdata = new ndn.Data(interest.name, si, bytes);
+      respdata.sign();
+      var enc = respdata.encode()
+      transport.send(enc)
 
 
       window.selfreg = fe
@@ -1526,7 +1565,7 @@ utils.chunkArbitraryData = function(name, data, fresh) {
     co.sign()
     ndnArray[i] = co.encode()
   };
-  
+
   return ndnArray;
 
 };
@@ -1560,7 +1599,7 @@ utils.isFirstSegment = function(name) {
 };
 
 utils.isLastSegment = function(name, co) {
-   
+
     return DataUtils.arraysEqual(name.components[name.components.length - 1].value, co.signedInfo.finalBlockID);
 }
 
@@ -1591,8 +1630,8 @@ utils.getSegmentInteger = function(name) {
 };
 
 utils.normalizeNameToObjectStore = function(name) {
-  var throwaway = utils.getNameWithoutCommandMarker(name); 
-  
+  var throwaway = utils.getNameWithoutCommandMarker(name);
+
   if (!utils.endsWithSegmentNumber(throwaway)) {
     return throwaway.appendSegment(0).toUri();
   } else if (!utils.isFirstSegment(throwaway)) {
@@ -1613,12 +1652,12 @@ utils.nameHasCommandMarker = function(name) {
     var component = name.components[i].getValue();
     if (component.length <= 0)
       continue;
-        
+
     if (component[0] == 0xC1) {
       return true
     };
   }
-    
+
   return false;
 };
 
@@ -1628,7 +1667,7 @@ utils.getCommandMarker = function(name) {
     var component = name.components[i].getValue();
     if (component.length <= 0)
       continue;
-        
+
     if (component[0] == 0xC1 && component[2] != 0x4E) {
       return name.components[i].toEscapedString()
     };
@@ -1637,12 +1676,12 @@ utils.getCommandMarker = function(name) {
 
 utils.getNameWithoutCommandMarker = function(name) {
   var strippedName = new Name('');
-  
+
   for (var i = 0 ; i < name.size(); i++) {
     var component = name.components[i].getValue();
     if (component.length <= 0)
       continue;
-        
+
     if (component[0] != 0xC1) {
       strippedName.append(name.components[i]);
     };
@@ -1659,14 +1698,14 @@ utils.appendVersion = function(name, date) {
     if (date) {
       if (date instanceof Date) {
         var d = date.getTime
-        
+
       } else
         var d = date;
     } else {
       var d = new Date().getTime;
     };
-    
-    var time = d.toString(16);          
+
+    var time = d.toString(16);
     if (time.length % 2 == 1) {
 	    time = '0' + time;
     };
@@ -1682,14 +1721,14 @@ utils.timeToVersion = function(date) {
   } else {
     var d = date;
   };
-  var time = d.toString(16);          
+  var time = d.toString(16);
   if (time.length % 2 == 1) {
     time = '0' + time;
   };
   time = 'fd' + time;
   var binTime = new ndnbuf(time, 'hex');
   return (new Name.Component(binTime).toEscapedString())
-  
+
 };
 
 utils.versionToTime = function(version) {
@@ -1711,8 +1750,7 @@ utils.setNonce = function(interest) {
 	  bytes.push(Math.floor(Math.random() * 256));
 	  console.log(bytes)
   }
-  var buf = new Uint8Array(bytes)
-  interest.name.append(buf)
+  var buf = new ndnbuf(bytes);
   interest.nonce = buf;
 }
 
