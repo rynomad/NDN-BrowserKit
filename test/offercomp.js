@@ -8,7 +8,7 @@ ndn.rtc = require('./lib/ndn-rtc.js');
 ndn.globalKeyManager = require('./lib/ndn-keygen.js')
 ndn.x = require('./lib/ndnx.js')
 
-window.LOG = 4
+window.LOG = 0
 module.exports = ndn;
 
 },{"./lib/ndn-d.js":6,"./lib/ndn-io.js":9,"./lib/ndn-keygen.js":10,"./lib/ndn-rtc.js":12,"./lib/ndnx.js":13,"./lib/repo.js":14,"./lib/utils.js":15,"ndn-browser-shim":16}],2:[function(require,module,exports){
@@ -44,7 +44,7 @@ var ForwarderFace = function ForwarderFace(opts)
   var self = this
   face.onReceivedElement = function(element)
   {
-    console.log("got element in forwarderFace ", self.host)
+    //console.log("got element in forwarderFace ", self.host)
     var decoder = new BinaryXMLDecoder(element);
     // Dispatch according to packet type
     if (decoder.peekDTag(NDNProtocolDTags.Interest)) {
@@ -57,23 +57,23 @@ var ForwarderFace = function ForwarderFace(opts)
       var isLocalInterest = false;
       if (utils.nameHasCommandMarker(interest.name)) {
         if (utils.getCommandMarker(interest.name) == '%C1.M.S.localhost') {
-          console.log("interest has localhost commandMarker")
+          //console.log("interest has localhost commandMarker")
           isLocalInterest = true;
         }
       }
       window.interest = interest
-      console.log(interest)
+      //console.log(interest)
       // Add to the PIT.
       for (var i = 0; i < PIT.length; i++) {
-        console.log(PIT[i].interest.nonce)
+        //console.log(PIT[i].interest.nonce)
         if (PIT[i].interest.nonce.toString() == interest.nonce.toString()) {
           return;
         };
       };
       var pEntry = new PitEntry(interest, this);
-      console.log(pEntry)
+      //console.log(pEntry)
       PIT.push(pEntry);
-      console.log('interest recieved in forwarding face', PIT,  FIB)
+      //console.log('interest recieved in forwarding face', PIT,  FIB)
       // Send the interest to the matching faces in the FIB.
       for (var i = 0; i < FIB.length; ++i) {
         var face = FIB[i];
@@ -94,7 +94,6 @@ var ForwarderFace = function ForwarderFace(opts)
 
     }
     else if (decoder.peekDTag(NDNProtocolDTags.Data)) {
-      var LOG = 4
       if (LOG > 3) console.log('Data packet received.');
 
       var data = new Data();
@@ -103,8 +102,8 @@ var ForwarderFace = function ForwarderFace(opts)
       // Iterate backwards so we can remove the entry and keep iterating.
 
       var pitEntry = Face.getEntryForExpressedInterest(data.name);
-      window.data = data
-      console.log(data)
+      //window.data = data
+      //console.log(data)
       if (pitEntry != null) {
         // Cancel interest timer
         clearTimeout(pitEntry.timerID);
@@ -136,8 +135,8 @@ var ForwarderFace = function ForwarderFace(opts)
         var thisNDN = this;
         KeyFetchClosure.prototype.upcall = function(kind, upcallInfo) {
           if (kind == Closure.UPCALL_INTEREST_TIMED_OUT) {
-            console.log("In KeyFetchClosure.upcall: interest time out.");
-            console.log(this.keyName.contentName.toUri());
+            //console.log("In KeyFetchClosure.upcall: interest time out.");
+            //console.log(this.keyName.contentName.toUri());
           }
           else if (kind == Closure.UPCALL_CONTENT) {
             var rsakey = new Key();
@@ -218,8 +217,8 @@ var ForwarderFace = function ForwarderFace(opts)
           }
           else {
             var cert = keylocator.certificate;
-            console.log("KeyLocator contains CERT");
-            console.log(cert);
+            //console.log("KeyLocator contains CERT");
+            //console.log(cert);
             // TODO: verify certificate
           }
         }
@@ -253,7 +252,7 @@ var ForwarderFace = function ForwarderFace(opts)
 
 module.exports = ForwarderFace
 },{"./FIB.js":2,"./PIT.js":4,"./utils.js":15,"ndn-browser-shim":16}],4:[function(require,module,exports){
-var PIT = []
+var PIT = [];
 
 module.exports = PIT
 },{}],5:[function(require,module,exports){
@@ -261,6 +260,7 @@ var process=require("__browserify_process");(function(){var e,t,n;(function(r){f
 },{"__browserify_process":18}],6:[function(require,module,exports){
 var ndn = require('ndn-browser-shim');
 ndn.globalKeyManager = require('./ndn-keygen.js')
+ndn.Faces = require('./ndn-faces.js')
 var utils = require('./utils.js');
 var Name = ndn.Name;
 var local = require('./ndn-ports.js');
@@ -276,6 +276,8 @@ var UpcallInfo = ndn.UpcallInfo;
 var FIB = require("./FIB.js");
 var PIT = require("./PIT.js");
 var Faces = require("./ndn-faces.js")
+ndn.FIB = FIB
+ndn.PIT = PIT
 require('./ndnx.js');
 
 var daemon = {};
@@ -393,7 +395,7 @@ ndndc.add = function(uri, arg2, arg3, arg4) {
     face.selfReg(uri);
     FIB.push(face);
     face.onopen = function() {
-      console.log(id, this, face, "triggered onopen from ndn.d.c.add rtc")
+      //console.log(id, this, face, "triggered onopen from ndn.d.c.add rtc")
     }
   } else if (arg2 == "th") {
     // asking for a telehash connection, arg3 = hashname (same as ndndid)
@@ -413,9 +415,10 @@ ndndc.del = function (uri, faceID) {
 }
 
 ndndc.destroyFace = function(faceID) {
+  Faces[faceID].transport.ws.close()
   delete Faces[faceID]
   for (var i = FIB.length - 1; i >= 0; i--) {
-    if (FIB[i].faceID = faceID) delete FIB[i]
+    if (FIB[i].faceID = faceID) FIB.splice(i, 1)
   }
 }
 
@@ -444,14 +447,14 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
 
     contentArray[segmentNumber] = (ndn.DataUtils.toString(co.content));
     recievedSegments++;
-    console.log(co, recievedSegments, finalSegmentNumber);
+    //console.log(co, recievedSegments, finalSegmentNumber);
     if (utils.isFirstSegment(co.name, co) || (recievedSegments == finalSegmentNumber)) {
       if (recievedSegments == finalSegmentNumber) {
-        console.log('got all segment', contentArray.length);
+        //console.log('got all segment', contentArray.length);
         if (type == "object") {
-          assembleObject();
+          assembleObject(interest.name);
         } else if (type == "blob") {
-          assembleBlob()
+          assembleBlob(interest.name)
         };
       } else {
         for (var i = 0; i < finalSegmentNumber; i++) {
@@ -474,13 +477,13 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
     whenNotGotten(name);
   };
 
-  var assembleBlob = function() {
-    var mime = co.name.components[2].toEscapedString() + '/' + co.name.components[3].toEscapedString()
+  var assembleBlob = function(name) {
+    var mime = name.components[2].toEscapedString() + '/' + name.components[3].toEscapedString()
     var blob = new Blob(contentArray, {type: mime})
     whenGotten(name, blob)
   };
 
-  var assembleObject = function() {
+  var assembleObject = function(name) {
     var string = "";
     for (var i = 0; i < contentArray.length; i++) {
       string += contentArray[i];
@@ -491,7 +494,8 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
 
   interest.childSelector = 1;
   utils.setNonce(interest)
-  console.log('does my', interest, 'have a nonce now?')
+  interest.interestLifetime = 10000
+  //console.log('does my', interest, 'have a nonce now?')
   io.face.expressInterest(interest, onData, onTimeout);
 };
 
@@ -520,14 +524,14 @@ io.publishFile = function(name, file) {
 
         transport.send(encodedData);
     };
-    console.log("about to read as array buffer")
+    //console.log("about to read as array buffer")
     fr.readAsArrayBuffer(blob, (end - start))
 
 
   };
 
   function onInterest(prefix, interest, transport) {
-    console.log("onInterest called.", interest);
+    //console.log("onInterest called.", interest);
     if (!utils.endsWithSegmentNumber(interest.name)) {
       interest.name.appendSegment(0);
     };
@@ -540,14 +544,14 @@ io.publishFile = function(name, file) {
 
   function sendWriteCommand() {
     var onTimeout = function (interest) {
-      console.log("timeout", interest);
+      //console.log("timeout", interest);
     };
     var onData = function(data) {
-      console.log(data)
+      //console.log(data)
     };
     command = name.getPrefix(name.components.length - 1).append(new ndn.Name.Component([0xc1, 0x2e, 0x52, 0x2e, 0x73, 0x77])).append(getSuffix(name, name.components.length - 1 ))
     io.face.expressInterest(command, onData, onTimeout);
-    console.log("did this time correctly?", command.toUri())
+    //console.log("did this time correctly?", command.toUri())
   };
   io.face.registerPrefix(new ndn.Name(name.toUri()), onInterest)
   setTimeout(sendWriteCommand, 5000)
@@ -575,9 +579,9 @@ function cb() {
   var keyName = new ndn.Name('/%C1.M.S.localhost/%C1.M.SRV/ndnd/KEY')
   var inst = new ndn.Interest(keyName)
   var onData = function(interest, data) {
-    console.log("got key data back: ", interest, data)
+    //console.log("got key data back: ", interest, data)
   }
-  console.log("expressing interest for key")
+  //console.log("expressing interest for key")
   //io.face.registerPrefix(new ndn.Name('stuff'))
 }
 
@@ -658,7 +662,7 @@ local.transport = function () {
  */
 local.transport.prototype.connect = function(face, onopenCallback)
 {
-  console.log(this, onopenCallback, face)
+  //console.log(this, onopenCallback, face)
   this.targetPort = face.port;
 
   if (this.portNumber == undefined) {
@@ -669,7 +673,7 @@ local.transport.prototype.connect = function(face, onopenCallback)
   var self = this;
   this.onmessage = function(ev) {
     var result = ev;
-    console.log('RecvHandle called on local face number ', self.portNumber );
+    //console.log('RecvHandle called on local face number ', self.portNumber );
 
     if (result == null || result == undefined || result == "") {
       console.log('INVALID ANSWER');
@@ -708,12 +712,12 @@ local.transport.prototype.send = function(data)
         //    ---Wentao
         var bytearray = new Uint8Array(data.length);
         bytearray.set(data);
-        console.log(bytearray)
+        //console.log(bytearray)
         ports[this.targetPort].onmessage(bytearray.buffer);
-    if (LOG > 3) console.log('ws.send() returned.');
+    if (LOG > 3) console.log('local.send() returned.');
   }
   else
-    console.log('rtc connection is not established.');
+    console.log('local connection is not established.');
 };
 
 module.exports = local;
@@ -749,7 +753,7 @@ var servers = server = {
 rtc.transport = function (dataChannel) {
   this.dc = dataChannel
   this.dc.onopen = function(ev) {
-    console.log('transport open ')
+    //console.log('transport open ')
   }
 };
 
@@ -768,38 +772,27 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
   this.elementReader = new BinaryXmlElementReader(face);
   var self = this;
   self.currentMessage = []
+  self.face = face
   this.dc.onmessage = function(ev) {
-    if (LOG > 3) console.log('dc.onmessage called', ev)
-    var json = JSON.parse(ev.data)
-    self.currentMessage[json.s] = json.n
-    if (json.s == json.l) {
-      var final = "";
-      for (var i = 0; i < json.l + 1; i++){
-        final += self.currentMessage[i]
-      }
+    //console.log('dc.onmessage called')
+    if (true) {
 
-      var result = atob(final);
-      console.log('RecvHandle called.');
-      var len = result.length;
-      var ab = new Uint8Array( len );
-      for (var i = 0; i < len; i++){
-          var ascii = result.charCodeAt(i);
-          ab[i] = ascii;
-      }
+      var result = ev.data;
+      //console.log('RecvHandle called.');
 
       if (result == null || result == undefined || result == "") {
-        console.log('INVALID ANSWER');
-      } else if (ab.buffer instanceof ArrayBuffer) {
-            var bytearray = new ndnbuf(ab);
+        //console.log('INVALID ANSWER');
+      } else if (result instanceof ArrayBuffer) {
+            var bytearray = new ndnbuf(result);
 
         if (LOG > 3) console.log('BINARY RESPONSE IS ' + bytearray.toString('hex'));
 
         try {
-                  console.log(self, face)
+                  //console.log(self, face)
                   // Find the end of the binary XML element and call face.onReceivedElement.
                   self.elementReader.onReceivedData(bytearray);
         } catch (ex) {
-          console.log("NDN.ws.onmessage exception: " + ex);
+          //console.log("NDN.ws.onmessage exception: " + ex);
           return;
         }
       }
@@ -825,18 +818,18 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
   }
 
   this.dc.onerror = function(ev) {
-    console.log('dc.onerror: ReadyState: ' + this.readyState);
-    console.log(ev);
-    console.log('dc.onerror: WebRTC error: ' + ev.data);
+    //console.log('dc.onerror: ReadyState: ' + this.readyState);
+    //console.log(ev);
+    //console.log('dc.onerror: WebRTC error: ' + ev.data);
   }
 
   this.dc.onclose = function(ev) {
-    console.log('dc.onclose: WebRTC connection closed.');
+    //console.log('dc.onclose: WebRTC connection closed.');
     self.dc = null;
 
     // Close Face when WebSocket is closed
-    face.readyStatus = Face.CLOSED;
-    face.onclose();
+    self.face.readyStatus = ndn.Face.CLOSED;
+    self.face.onclose();
     //console.log("NDN.onclose event fired.");
   }
   onopenCallback();
@@ -856,38 +849,16 @@ rtc.transport.prototype.send = function(data)
         // a new Uint8Array buffer with just the right size and copy the
         // content from binaryInterest to the new buffer.
         //    ---Wentao
-        console.log(data)
-        var base64String = btoa(String.fromCharCode.apply(null, new Uint8Array(data)));
-        var strArray = base64String.match(/.{1,1100}/g)
-        var i = 0
-        var dc = this.dc
-        function sendChunk() {
-          if (dc.readyState == "open") {
-            var chuStr = strArray[i]
-            var wrap = {n:chuStr,s:i,l:strArray.length - 1}
-            var toSend = JSON.stringify(wrap)
-            console.log(dc, toSend)
-            dc.send(toSend)
-            i++
-            if (i < strArray.length) {
-              setTimeout(sendChunk, 50)
-            }
-          } else {
-            setTimeout(sendChunk, 100)
-          }
+        var bytearray = new Uint8Array(data.length);
+        bytearray.set(data);
+        this.dc.send(bytearray.buffer);
 
-        }
-        sendChunk()
-        ;
-    if (LOG > 3) console.log('ws.send() returned.');
-  }
-  else
+    if (LOG > 3) console.log('rtc.send() returned.');
+  } else {
     console.log('rtc connection is not established.');
+  };
 };
 
-
-
-var rtcNameSpace = 'ndnx'
 
 function sendOfferAndIceCandidate(ndndid, face, peer, offer, candidate) {
   var iceOffer = new Name(['ndnx', ndndid, 'newRTCface']);
@@ -895,8 +866,8 @@ function sendOfferAndIceCandidate(ndndid, face, peer, offer, candidate) {
   var obj = {action: 'newRTCface', sdp: offer.sdp, ice: candidate};
   console.log(obj)
   var string = JSON.stringify(obj)
-  console.log(string)
-  var nfblob = new Data(new Name(), new ndn.SignedInfo(), new ndn.ndnbuf(string))
+  var bytes = new ndn.ndnbuf(string)
+  var nfblob = new Data(new Name(), new ndn.SignedInfo(), bytes)
   nfblob.signedInfo.setFields()
   nfblob.sign()
   var encoded = nfblob.encode()
@@ -928,8 +899,9 @@ rtc.createPeerConnection = function (ndndid, face) {
   if (ndndid == undefined) {
     ndndid = 'filler'
   }
-  var peer = new PeerConnection(servers, {optional: [{RtpDataChannels: true}]})
+  var peer = new PeerConnection(servers)
   var dataChannel = peer.createDataChannel('ndn', null);
+  window.test = [peer, dataChannel]
 
   peer.onicecandidate = function (evt) {
     if (evt.candidate) {
@@ -948,10 +920,11 @@ rtc.createPeerConnection = function (ndndid, face) {
     // after this function returns, pc1 will start firing icecandidate events
     console.log('local description set, ', peer);
   };
-
+  var cb = function(){return true}
   peer.createOffer(onOfferCreated);
   var transport = new rtc.transport(dataChannel)
   var newFace = new ForwarderFace({host:0, port: 0, getTransport: function(){return transport}})
+  newFace.transport.connect(newFace, cb)
   newFace.selfReg('ndnx')
   return newFace
 };
@@ -961,19 +934,20 @@ rtc.onInterest = function (prefix, interest, transport) {
   var d = new Data();
   d.decode(nfblob)
   var string = ndn.DataUtils.toString(d.content);
-  console.log(string)
+  //console.log(string)
   var iceOffer = JSON.parse(string)
-  console.log(iceOffer)
+  //console.log(iceOffer)
   var candidate = iceOffer.ice;
 
-  console.log(nfblob);
+  console.log(iceOffer);
 
   var offer = {
     type: "offer",
     sdp: iceOffer.sdp
   };
 
-  var peer = new PeerConnection(servers, {optional: [{RtpDataChannels: true}]});
+  var peer = new PeerConnection(servers);
+  window.test = peer
 
   peer.onicecandidate = function (evt) {
     peer.answer.ice = evt.candidate
@@ -985,12 +959,13 @@ rtc.onInterest = function (prefix, interest, transport) {
     var encoded = data.encode()
 
     transport.send(encoded);
-    console.log('sent answer', peer);
+    console.log('sent answer', peer.answer);
     peer.onicecandidate = null;
   };
 
   peer.ondatachannel = function (evt) {
     var dataChannel = evt.channel
+    console.log(evt)
     var transport = new rtc.transport(dataChannel)
 
     var face = new ForwarderFace({host: 0, port: 0, getTransport: function(){return transport}})
@@ -1002,7 +977,7 @@ rtc.onInterest = function (prefix, interest, transport) {
     transport.connect(face, cb)
     console.log('webrtc NDN Face!', face);
     transport.onopen = function () {
-      face.registerPrefix(new ndn.Name('ndnx'), rtc.onInterest)
+      //face.registerPrefix(new ndn.Name('ndnx'), rtc.onInterest)
     }
   };
 
@@ -1025,8 +1000,6 @@ rtc.onInterest = function (prefix, interest, transport) {
   };
 
 };
-
-//rtc.face.registerPrefix(new ndn.Name(rtcNameSpace), onRTCInterest)
 
 module.exports = rtc;
 
@@ -1075,7 +1048,7 @@ var onInterest = function(prefix, interest, transport) {
       fe.from_ndnb(decoder)
 
       var ndndID = d.signedInfo.publisher.publisherPublicKeyDigest;
-      console.log(Faces, fe.ndndID)
+      //console.log(Faces, fe.ndndID)
       for(i = 0; i < Faces.length; i++ ){
         if (Faces[i].ndndid.toString() == ndndID.toString()) {
           fe.faceID = i
@@ -1540,7 +1513,7 @@ var DataUtils = require('ndn-browser-shim').DataUtils
 
 utils.chunkArbitraryData = function(name, data, fresh) {
   var ndnArray = [];
-  console.log(name)
+  //console.log(name)
   if (typeof data == 'object') {
     var string = JSON.stringify(data);
   } else if (typeof data == 'string') {
@@ -1558,7 +1531,7 @@ utils.chunkArbitraryData = function(name, data, fresh) {
     co = new Data(segmentNames[i], new SignedInfo(), new ndnbuf(stringArray[i]));
     co.signedInfo.setFields()
     co.signedInfo.finalBlockID = utils.initSegment(stringArray.length - 1)
-    console.log(co.signedInfo.finalBlockID)
+    //console.log(co.signedInfo.finalBlockID)
     if (fresh != undefined) {
       co.signedInfo.freshnessSeconds = fresh
     }
@@ -1662,7 +1635,7 @@ utils.nameHasCommandMarker = function(name) {
 };
 
 utils.getCommandMarker = function(name) {
-  console.log(name)
+  //console.log(name)
   for (var i = name.size() - 1; i >= 0; --i) {
     var component = name.components[i].getValue();
     if (component.length <= 0)
@@ -1711,7 +1684,7 @@ utils.appendVersion = function(name, date) {
     };
     time = 'fd' + time;
     var binTime = new ndnbuf(time, 'hex');
-    console.log(binTime)
+    //console.log(binTime)
     return name.append(binTime);
 };
 
@@ -1734,10 +1707,10 @@ utils.timeToVersion = function(date) {
 utils.versionToTime = function(version) {
   time = 0
   array = DataUtils.toNumbers(DataUtils.toHex(version))
-  console.log(array)
+  //console.log(array)
   for (i = 1; i < array.length ; i++) {
     time = time + (array[i] * Math.pow(2, (7 - i)));
-    console.log(time)
+    //console.log(time)
   };
   return time
 };
@@ -1748,7 +1721,7 @@ utils.setNonce = function(interest) {
   var bytes = [0xc1, 0x2e, 0x4e, 0x00];
   for (var n = 8; n > 0; n--) {
 	  bytes.push(Math.floor(Math.random() * 256));
-	  console.log(bytes)
+	  //console.log(bytes)
   }
   var buf = new ndnbuf(bytes);
   interest.nonce = buf;
