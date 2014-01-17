@@ -14,10 +14,13 @@ function test(file) {
   } else {
   }
 }
-console.log(window.f1, window.f2)
+
+    var localndnid = [149, 117, 146, 167, 164, 108, 250, 63, 46, 48, 121, 131, 16, 117, 105, 20, 171, 143, 118, 110, 125, 101, 224, 84, 179, 87, 10, 213, 236, 204, 165, 30]
+
+
 </script>
 
-<input id="image-file" type="file" onchange="test(this.files[0])"/>
+    <input id="image-file" type="file" onchange="ndn.io.publishFile(new ndn.Name('test/mime/' + this.files[0].type + '/' + this.files[0].name), this.files[0])"/>
 <body>
 </body>
 
