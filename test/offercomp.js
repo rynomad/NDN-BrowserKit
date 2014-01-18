@@ -447,44 +447,63 @@ var io = {};
 
 
 io.fetch = function(name, type, whenGotten, whenNotGotten) {
+
+  var interestsInFlight = 0;
+  var windowSize = 4;
+  var t0 = new Date().getTime()
+
+
+
+
+
+
+
   var contentArray = [];
-  var interest = new ndn.Interest(name);
+
   var recievedSegments = 0;
 
   var onData = function(interest, co) {
+    interestsInFlight--;
+
     var segmentNumber = utils.getSegmentInteger(co.name)
     var finalSegmentNumber = 1 + ndn.DataUtils.bigEndianToUnsignedInt(co.signedInfo.finalBlockID);
+    //console.log(segmentNumber, co.name.toUri());
+    if (contentArray[segmentNumber] == undefined) {
+      contentArray[segmentNumber] = (ndn.DataUtils.toString(co.content));
+      recievedSegments++;
+    }
 
-    contentArray[segmentNumber] = (ndn.DataUtils.toString(co.content));
-    recievedSegments++;
-    //console.log(co, recievedSegments, finalSegmentNumber);
-    if (utils.isFirstSegment(co.name, co) || (recievedSegments == finalSegmentNumber)) {
-      if (recievedSegments == finalSegmentNumber) {
-        //console.log('got all segment', contentArray.length);
+    //console.log(recievedSegments, finalSegmentNumber, interestsInFlight);
+    if (recievedSegments == finalSegmentNumber) {
+        console.log('got all segment', contentArray.length);
         if (type == "object") {
           assembleObject(interest.name);
         } else if (type == "blob") {
           assembleBlob(interest.name)
         };
-      } else {
+        var t1 = new Date().getTime()
+        console.log(t1 - t0)
+    } else {
+      if (interestsInFlight < windowSize) {
         for (var i = 0; i < finalSegmentNumber; i++) {
           if (contentArray[i] == undefined) {
             var newName = co.name.getPrefix(-1).appendSegment(i)
             var newInterest = new ndn.Interest(newName)
+            //console.log(newName.toUri())
             utils.setNonce(newInterest)
             io.face.expressInterest(newInterest, onData, onTimeout)
+            interestsInFlight++
+            if (interestsInFlight == windowSize) {
+              //stop iterating
+              i = finalSegmentNumber;
+            };
           };
         };
       };
-    } else {
-      var newName = co.name.getPrefix(-1).appendSegment(segmentNumber - 1);
-      var newInterest = new ndn.Interest(newName)
-      utils.setNonce(newInterest);
-      io.face.expressInterest(newInterest, onData, onTimeout);
     };
   };
   var onTimeout = function(interest) {
-    whenNotGotten(name);
+    if (whenNotGotten) whenNotGotten(name);
   };
 
   var assembleBlob = function(name) {
@@ -502,11 +521,17 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
     whenGotten(name, obj);
   };
 
-  interest.childSelector = 1;
-  utils.setNonce(interest)
-  interest.interestLifetime = 10000
-  //console.log('does my', interest, 'have a nonce now?')
-  io.face.expressInterest(interest, onData, onTimeout);
+  for (interestsInFlight; interestsInFlight < windowSize; interestsInFlight++){
+    //console.log(interestsInFlight)
+    var segName = new ndn.Name(name)
+    segName.appendSegment(interestsInFlight)
+    var interest = new ndn.Interest(segName);
+    utils.setNonce(interest)
+    //console.log(interest.name.toUri())
+
+    io.face.expressInterest(interest, onData, onTimeout);
+  }
+
 };
 
 io.publishFile = function(name, file) {
@@ -730,7 +755,6 @@ local.transport.prototype.send = function(data)
         //    ---Wentao
         var bytearray = new Uint8Array(data.length);
         bytearray.set(data);
-        //console.log(bytearray)
         ports[this.targetPort].onmessage(bytearray.buffer);
     if (LOG > 3) console.log('local.send() returned.');
   }
@@ -792,7 +816,7 @@ rtc.transport.prototype.connect = function(face, onopenCallback)
   self.currentMessage = []
   self.face = face
   this.dc.onmessage = function(ev) {
-    console.log('dc.onmessage called')
+    //console.log('dc.onmessage called')
     if (true) {
 
       var result = ev.data;
@@ -1341,7 +1365,7 @@ function recursiveSegmentRequest(face, prefix, objectStoreName) {
             finalSegment = ndn.DataUtils.bigEndianToUnsignedInt(insertSegment.contentObject.signedInfo.finalBlockID);
 
         e.target.result.transaction(objectStoreName, "readwrite").objectStore(objectStoreName).put(insertSegment.contentObject.encode(), currentSegment).onsuccess = function(e) {
-          console.log("retrieved and stored segment ", currentSegment, " of ", finalSegment  ," into objectStore ", objectStoreName);
+          console.log("retrieved and stored segment ", currentSegment, " of ", finalSegment);
           if (currentSegment < finalSegment) {
             var newName = firstSegmentName.getPrefix(firstSegmentName.components.length - 1).appendSegment(currentSegment + 1);
             var newInterest = new ndn.Interest(newName)
@@ -1352,7 +1376,6 @@ function recursiveSegmentRequest(face, prefix, objectStoreName) {
       };
 
   function onData(interest, contentObject) {
-    console.log("onData called in recursiveSegmentRequest: ", contentObject)
     insertSegment.contentObject = contentObject;
     useIndexedDB(dbName, insertSegment)
   };
