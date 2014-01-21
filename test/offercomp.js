@@ -42,15 +42,8 @@ var ForwarderFace = function ForwarderFace(opts)
 {
   var face = new ndn.Face(opts);
   var self = this
-  face.onReceivedElement = function(element)
-  {
-    //console.log("got element in forwarderFace ", self.host)
-    var decoder = new BinaryXMLDecoder(element);
-    // Dispatch according to packet type
-    if (decoder.peekDTag(NDNProtocolDTags.Interest)) {
-      var interest = new Interest();
-      interest.from_ndnb(decoder);
-      if (LOG > 3) console.log("Interest packet received: " + interest.name.toUri() + "\n");
+  face.forwardingInterestHandler = function (prefix, interest, element){
+    if (LOG > 3) console.log("Interest packet received: " + interest.name.toUri() + "\n");
 
       if (LOG > 3) console.log('Interest packet received.');
 
@@ -87,11 +80,23 @@ var ForwarderFace = function ForwarderFace(opts)
               //console.log(face.registeredPrefixes[j].toUri(), (interest.name.toUri()))
               if ((face.registeredPrefixes[j] != null) && face.registeredPrefixes[j].match(interest.name) && (face.readyStatus == 0 || 'open')) {
                 face.transport.send(element);
-              };
-            };
-          };
-        };
-      };
+              }
+            }
+          }
+        }
+      }
+
+
+  }
+  face.onReceivedElement = function(element)
+  {
+    //console.log("got element in forwarderFace ", self.host)
+    var decoder = new BinaryXMLDecoder(element);
+    // Dispatch according to packet type
+    if (decoder.peekDTag(NDNProtocolDTags.Interest)) {
+      var interest = new Interest();
+      interest.from_ndnb(decoder);
+      this.forwardingInterestHandler(null, interest, element)
 
 
     }
@@ -309,7 +314,7 @@ repoFace.transport.connect(repoFace, function(){
 });
 
 function bcb(){
-  Bootstrap.registerPrefix(prefii.ndnx);
+  Bootstrap.registerPrefix(prefii.ndnx, Bootstrap.interestHandler);
   Bootstrap.selfReg(prefii.ndnx)
   Bootstrap.selfReg('ndnx')
   var bootstrapPrefix = new ndn.Name('ndnx')
@@ -469,7 +474,12 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
     var finalSegmentNumber = 1 + ndn.DataUtils.bigEndianToUnsignedInt(co.signedInfo.finalBlockID);
     //console.log(segmentNumber, co.name.toUri());
     if (contentArray[segmentNumber] == undefined) {
-      contentArray[segmentNumber] = (ndn.DataUtils.toString(co.content));
+      if (type == 'object') {
+        contentArray[segmentNumber] = (ndn.DataUtils.toString(co.content));
+      } else if (type == 'blob'){
+        contentArray[segmentNumber] = co.content;
+      }
+
       recievedSegments++;
     }
 
@@ -891,9 +901,9 @@ rtc.transport.prototype.send = function(data)
         // a new Uint8Array buffer with just the right size and copy the
         // content from binaryInterest to the new buffer.
         //    ---Wentao
-        var bytearray = new Uint8Array(data.length);
-        bytearray.set(data);
-        this.dc.send(bytearray.buffer);
+        //var bytearray = new Uint8Array(data.length);
+        //bytearray.set(data);
+        this.dc.send(data.buffer);
 
     if (LOG > 3) console.log('rtc.send() returned.');
   } else {
@@ -1253,14 +1263,14 @@ ndnr.prototype.put = function (name, data, callback) {
 // vvvv THIS IS THE GOOD STUFF vvvv Plus NDN-helpers. NEED to Refactor and streamline useIndexedDB a little but it seems to be working good
 
 ndnr.prototype.interestHandler = function(prefix, interest, transport) {
-  console.log("onInterest called for incoming interest: ", interest.toUri());
+  //console.log("onInterest called for incoming interest: ", interest.toUri());
   interest.face = rFace;
   if (utils.nameHasCommandMarker(interest.name)) {
     console.log('incoming interest has command marker ', utils.getCommandMarker(interest.name));
     executeCommand(prefix, interest, transport);
     return;
   } else {
-    console.log('attempting to fulfill interest');
+    //console.log('attempting to fulfill interest');
     fulfillInterest(prefix, interest, transport);
   };
 };
@@ -1268,7 +1278,7 @@ ndnr.prototype.interestHandler = function(prefix, interest, transport) {
 
 //TODO: Flesh out this subroutine, it is the keystone of the library, handle interest selectors, etc
 function fulfillInterest(prefix, interest, transport) {
-  console.log('repo fulfilling interest')
+  //console.log('repo fulfilling interest')
   var localName = utils.getSuffix(interest.name, prefix.components.length )
       objectStoreName = utils.normalizeNameToObjectStore(localName),
       dbName = prefix.toUri(),
@@ -1284,13 +1294,14 @@ function fulfillInterest(prefix, interest, transport) {
   if (utils.endsWithSegmentNumber(interest.name)) {
     // A specific segment of a data object is being requested, so don't bother querying for loose matches, just return or drop
     requestedSegment = utils.getSegmentInteger(interest.name)
-    console.log(requestedSegment, interest.name.components)
-    getContent.onsuccess = function(e) {
+    //console.log(requestedSegment, interest.name.components)
+    getContent.onsuccess = function(e, request) {
       getContent.result = e.target.result;
       if (e.target.result.objectStoreNames.contains(objectStoreName)) {
         e.target.result.transaction(objectStoreName).objectStore(objectStoreName).get(requestedSegment).onsuccess = function(e) {
           console.log( 'about to send')
           transport.send(e.target.result)
+          request.result.close()
         };
       } else {
         console.log("no data for ", interest)
@@ -1502,7 +1513,7 @@ function useIndexedDB(dbName, action, version) {
         console.log('version change requested, closing db');
         request.result.close();
       }
-      action.onsuccess(e);
+      action.onsuccess(e, request);
     };
   } else {
     request.onsuccess = function(e) {
