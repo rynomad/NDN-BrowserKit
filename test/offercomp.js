@@ -456,8 +456,8 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
   var interestsInFlight = 0;
   var windowSize = 4;
   var t0 = new Date().getTime()
-
-
+  var segmentRequested = [];
+  var whenNotGottenTriggered = false
 
 
 
@@ -496,12 +496,13 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
     } else {
       if (interestsInFlight < windowSize) {
         for (var i = 0; i < finalSegmentNumber; i++) {
-          if (contentArray[i] == undefined) {
+          if ((contentArray[i] == undefined) && (segmentRequested[i] == undefined)) {
             var newName = co.name.getPrefix(-1).appendSegment(i)
             var newInterest = new ndn.Interest(newName)
             //console.log(newName.toUri())
             utils.setNonce(newInterest)
             io.face.expressInterest(newInterest, onData, onTimeout)
+            segmentRequested[i] = 0;
             interestsInFlight++
             if (interestsInFlight == windowSize) {
               //stop iterating
@@ -513,13 +514,23 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
     };
   };
   var onTimeout = function(interest) {
-    if (whenNotGotten) whenNotGotten(name);
+    var seg = utils.getSegmentInteger(interest.name)
+    if (segmentRequested[seg] < 3) {
+      segmentRequested[seg]++
+      var newInterest = new ndn.Interest(interest.name)
+      utils.setNonce(newInterest)
+      io.face.expressInterest(newInterest, onData, onTimeout)
+
+    } else if ((whenNotGottenTriggered == false) && (whenNotGotten)) {
+      whenNotGottenTriggered = true;
+      whenNotGotten(name);
+    }
   };
 
   var assembleBlob = function(name) {
     var mime = name.components[2].toEscapedString() + '/' + name.components[3].toEscapedString()
     var blob = new Blob(contentArray, {type: mime})
-    whenGotten(name, blob)
+    whenGotten(name, blob);
   };
 
   var assembleObject = function(name) {
@@ -535,6 +546,7 @@ io.fetch = function(name, type, whenGotten, whenNotGotten) {
     //console.log(interestsInFlight)
     var segName = new ndn.Name(name)
     segName.appendSegment(interestsInFlight)
+    segmentRequested[interestsInFlight] = 0;
     var interest = new ndn.Interest(segName);
     utils.setNonce(interest)
     //console.log(interest.name.toUri())
@@ -1025,8 +1037,9 @@ rtc.onInterest = function (prefix, interest, transport) {
     function cb() {
       face.ndndid = d.signedInfo.publisher.publisherPublicKeyDigest
       Faces.push(face)
-      ndn.FIB.push(face)
+
     }
+    ndn.FIB.push(face)
     face.transport.connect(face, cb)
     console.log('webrtc NDN Face!', face);
   };
