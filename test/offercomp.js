@@ -76,10 +76,11 @@ var ForwarderFace = function ForwarderFace(opts)
         } else {
           if (face.registeredPrefixes != undefined){
             for (var j = 0; j < face.registeredPrefixes.length; j++ ) {
-              //console.log('checking registeredPrefix', (face.registeredPrefixes[j] != null),  face.registeredPrefixes[j].match(interest.name),(face.readyStatus == 0 || 'open') )
+              //console.log('checking registeredPrefix',face.registeredPrefixes[j], (face.registeredPrefixes[j] != null),  face.registeredPrefixes[j].match(interest.name),(face.readyStatus == 0 || 'open') )
               //console.log(face.registeredPrefixes[j].toUri(), (interest.name.toUri()))
               if ((face.registeredPrefixes[j] != null) && face.registeredPrefixes[j].match(interest.name) && (face.readyStatus == 0 || 'open')) {
                 face.transport.send(element);
+                //console.log("sent interest", interest, "to face", face);
               }
             }
           }
@@ -360,7 +361,6 @@ var keyClosure = new Face.CallbackClosure(null, null, onKeyInterest, keyPrefix, 
 
 Face.registeredPrefixTable.push(new RegisteredPrefix(keyPrefix, keyClosure))
 toUserSpace.transport.connect(toUserSpace, cb);
-toUserSpace.selfReg('/')
 FIB.push(Bootstrap);
 FIB.push(keyFace);
 FIB.push(ndnx);
@@ -1035,10 +1035,11 @@ rtc.onInterest = function (prefix, interest, transport) {
     var face = new ForwarderFace({host: 0, port: 0, getTransport: function(){return transport}})
     face.selfReg('ndnx')
     function cb() {
-      face.ndndid = d.signedInfo.publisher.publisherPublicKeyDigest
-      Faces.push(face)
+
 
     }
+    face.ndndid = d.signedInfo.publisher.publisherPublicKeyDigest
+    Faces.push(face)
     ndn.FIB.push(face)
     face.transport.connect(face, cb)
     console.log('webrtc NDN Face!', face);
